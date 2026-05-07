@@ -81,13 +81,22 @@ async function resolveDownloadDir(): Promise<string> {
 
 // ── Helper: sanitize untrusted Feishu filename ──
 
+function removeControlChars(value: string): string {
+  return Array.from(value)
+    .filter((char) => {
+      const code = char.charCodeAt(0)
+      return code >= 32 && code !== 127
+    })
+    .join("")
+}
+
 function sanitizeFilename(raw: string): string {
   // Strip path separators, parent-dir traversals, and control characters
-  let name = raw
-    .replace(/[/\\]/g, "")
-    .replace(/\.\./g, "")
-    .replace(/[\x00-\x1f\x7f]/g, "")
-    .trim()
+  let name = removeControlChars(
+    raw
+      .replace(/[/\\]/g, "")
+      .replace(/\.\./g, ""),
+  ).trim()
 
   if (!name) name = "file"
 
@@ -102,6 +111,36 @@ function sanitizeFilename(raw: string): string {
   const timestamp = Date.now()
   const rand = randomBytes(2).toString("hex")
   return `${timestamp}-${rand}-${name}`
+}
+
+function detectImageExtension(data: Buffer): "jpg" | "png" | "gif" | "webp" {
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) {
+    return "jpg"
+  }
+
+  if (data.length >= 4 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) {
+    return "png"
+  }
+
+  if (data.length >= 4 && data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x38) {
+    return "gif"
+  }
+
+  if (
+    data.length >= 12 &&
+    data[0] === 0x52 &&
+    data[1] === 0x49 &&
+    data[2] === 0x46 &&
+    data[3] === 0x46 &&
+    data[8] === 0x57 &&
+    data[9] === 0x45 &&
+    data[10] === 0x42 &&
+    data[11] === 0x50
+  ) {
+    return "webp"
+  }
+
+  return "png"
 }
 
 // ── Helper: download and save file/image from Feishu ──
@@ -124,7 +163,7 @@ async function handleFileOrImageMessage(
     }
 
     const { data } = await feishuClient.downloadResource(messageId, imageKey, "image")
-    const safeName = sanitizeFilename("image.png")
+    const safeName = sanitizeFilename(`image.${detectImageExtension(data)}`)
     const filepath = join(downloadDir, safeName)
 
     // Guard against path traversal
@@ -198,6 +237,42 @@ function extractTextFromPost(content: string): string {
   } catch {
     return ""
   }
+}
+
+function cleanStrippedMentionSpacing(text: string): string {
+  return text
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+function resolveMentionPlaceholders(
+  text: string,
+  mentions: FeishuMessageEvent["mentions"],
+  botOpenId?: string,
+): string {
+  if (!mentions?.length) return text
+
+  let resolvedText = text
+  let strippedBotMention = false
+
+  for (const mention of mentions) {
+    if (!mention.key) continue
+
+    if (botOpenId && mention.id.open_id === botOpenId) {
+      resolvedText = resolvedText.replaceAll(mention.key, "")
+      strippedBotMention = true
+      continue
+    }
+
+    if (mention.name) {
+      resolvedText = resolvedText.replaceAll(mention.key, `@${mention.name}`)
+    }
+  }
+
+  return strippedBotMention ? cleanStrippedMentionSpacing(resolvedText) : resolvedText
 }
 
 // ── Helper: fetch quoted message text for reply context ──
@@ -400,6 +475,10 @@ export function createMessageHandler(
       } catch {
         userText = event.message.content
       }
+    }
+
+    if (messageType === "text" || messageType === "post") {
+      userText = resolveMentionPlaceholders(userText, event.mentions, deps.botOpenId)
     }
 
     if (!userText.trim()) return

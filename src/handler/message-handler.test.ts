@@ -148,10 +148,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -236,10 +238,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -252,6 +256,101 @@ describe("createMessageHandler", () => {
     const body = JSON.parse((postCall![1] as { body: string }).body)
     expect(body.parts[0].text).toContain("1. first item")
     expect(body.parts[0].text).toContain("2. second item")
+  })
+
+  it("resolves text message mention placeholders and strips the bot mention", async () => {
+    mockFetchOk("")
+    const deps = makeDeps({ botOpenId: "bot-1" })
+    const { handleMessage: handler } = createMessageHandler(deps)
+
+    const handlerPromise = handler(
+      makeEvent({
+        chat_type: "group",
+        message: {
+          message_type: "text",
+          content: JSON.stringify({ text: "@_user_1 please ask @_user_2 to review" }),
+        },
+        mentions: [
+          { id: { open_id: "bot-1" }, name: "Opencode Bot", key: "@_user_1" },
+          { id: { open_id: "ou-alice" }, name: "Alice", key: "@_user_2" },
+        ],
+      }),
+    )
+
+    await waitFor(() => {
+      expect(deps.eventListeners.size).toBe(1)
+    })
+
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
+
+    await handlerPromise
+
+    const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const postCall = fetchCalls.find(
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+    )
+    expect(postCall).toBeDefined()
+    const body = JSON.parse((postCall![1] as { body: string }).body) as { parts: Array<{ text: string }> }
+    const postedText = body.parts[0]?.text
+    expect(postedText).toContain("please ask @Alice to review")
+    expect(postedText).not.toContain("@_user_1")
+    expect(postedText).not.toContain("@_user_2")
+    expect(postedText).not.toContain("@Opencode Bot")
+  })
+
+  it("resolves post message mention placeholders and strips the bot mention", async () => {
+    mockFetchOk("")
+    const deps = makeDeps({ botOpenId: "bot-1" })
+    const { handleMessage: handler } = createMessageHandler(deps)
+
+    const postContent = JSON.stringify({
+      content: [
+        [
+          { tag: "text", text: "@_user_1 please sync with @_user_2" },
+        ],
+      ],
+    })
+
+    const handlerPromise = handler(
+      makeEvent({
+        chat_type: "group",
+        message: { message_type: "post", content: postContent },
+        mentions: [
+          { id: { open_id: "bot-1" }, name: "Opencode Bot", key: "@_user_1" },
+          { id: { open_id: "ou-bob" }, name: "Bob", key: "@_user_2" },
+        ],
+      }),
+    )
+
+    await waitFor(() => {
+      expect(deps.eventListeners.size).toBe(1)
+    })
+
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
+
+    await handlerPromise
+
+    const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const postCall = fetchCalls.find(
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+    )
+    expect(postCall).toBeDefined()
+    const body = JSON.parse((postCall![1] as { body: string }).body) as { parts: Array<{ text: string }> }
+    const postedText = body.parts[0]?.text
+    expect(postedText).toContain("please sync with @Bob")
+    expect(postedText).not.toContain("@_user_1")
+    expect(postedText).not.toContain("@_user_2")
+    expect(postedText).not.toContain("@Opencode Bot")
   })
 
   it("skips empty text messages", async () => {
@@ -378,10 +477,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -454,26 +555,32 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.get("ses-1")?.size).toBe(3)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "message.part.updated",
-      properties: {
-        part: { sessionID: "ses-1", messageID: "msg-1", type: "text", text: "Hello" },
-        delta: "Hello ",
-      },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "message.part.updated",
+        properties: {
+          part: { sessionID: "ses-1", messageID: "msg-1", type: "text", text: "Hello" },
+          delta: "Hello ",
+        },
+      })
+    })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "message.part.updated",
-      properties: {
-        part: { sessionID: "ses-1", messageID: "msg-1", type: "text", text: "Hello World" },
-        delta: "World",
-      },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "message.part.updated",
+        properties: {
+          part: { sessionID: "ses-1", messageID: "msg-1", type: "text", text: "Hello World" },
+          delta: "World",
+        },
+      })
+    })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -566,10 +673,12 @@ describe("createMessageHandler", () => {
       expect(deps.ownedSessions.has("ses-1")).toBe(true)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
   })
@@ -598,18 +707,22 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "message.part.updated",
-      properties: {
-        part: { sessionID: "ses-1", messageID: "m-1", type: "text", text: "Reply" },
-        delta: "Reply",
-      },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "message.part.updated",
+        properties: {
+          part: { sessionID: "ses-1", messageID: "m-1", type: "text", text: "Reply" },
+          delta: "Reply",
+        },
+      })
+    })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
     
@@ -635,10 +748,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -662,19 +777,23 @@ describe("createMessageHandler", () => {
     // First message
     const p1 = handler(makeEvent({ event_id: "evt-1" }))
     await waitFor(() => { expect(deps.eventListeners.size).toBe(1) })
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
     await p1
 
     // Second message (different event_id)
     const p2 = handler(makeEvent({ event_id: "evt-2" }))
     await waitFor(() => { expect(deps.eventListeners.size).toBe(1) })
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
     await p2
 
     // Second POST should have lightweight tag with sender name
@@ -717,10 +836,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -745,10 +866,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -783,10 +906,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -813,18 +938,22 @@ describe("createMessageHandler", () => {
     })
 
     // Dispatch event with messageID
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "message.part.updated",
-      properties: {
-        part: { sessionID: "ses-1", messageID: "oc-msg-42", type: "text", text: "Hello" },
-        delta: "Hello",
-      },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "message.part.updated",
+        properties: {
+          part: { sessionID: "ses-1", messageID: "oc-msg-42", type: "text", text: "Hello" },
+          delta: "Hello",
+        },
+      })
+    })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -842,10 +971,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -911,10 +1042,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -948,10 +1081,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -978,10 +1113,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -1007,10 +1144,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -1027,6 +1166,44 @@ describe("createMessageHandler", () => {
     expect(body.parts[0].text).toContain("User sent an image.")
     expect(body.parts[0].text).toContain("Saved to:")
     expect(body.parts[0].text).toContain("Please look at this image.")
+  })
+
+  it("handles JPEG image message — saves with .jpg extension", async () => {
+    mockFetchOk("")
+    const feishuClient = createMockFeishuClient()
+    ;(feishuClient.downloadResource as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]),
+      filename: undefined,
+    })
+    const deps = makeDeps({ feishuClient })
+    const { handleMessage: handler } = createMessageHandler(deps)
+
+    const imageContent = JSON.stringify({ image_key: "img_jpeg123" })
+    const handlerPromise = handler(
+      makeEvent({ message: { message_type: "image", content: imageContent } }),
+    )
+
+    await waitFor(() => {
+      expect(deps.eventListeners.size).toBe(1)
+    })
+
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
+
+    await handlerPromise
+
+    const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const postCall = fetchCalls.find(
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+    )
+    expect(postCall).toBeDefined()
+    const body = JSON.parse((postCall![1] as { body: string }).body)
+    expect(body.parts[0].text).toMatch(/Saved to: .+image\.jpg/)
+    expect(body.parts[0].text).not.toMatch(/Saved to: .+image\.png/)
   })
 
   it("handles file message — downloads and forwards as text", async () => {
@@ -1048,10 +1225,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -1088,10 +1267,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -1126,10 +1307,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -1158,10 +1341,12 @@ describe("createMessageHandler", () => {
       expect(deps.eventListeners.size).toBe(1)
     })
 
-    ;[...deps.eventListeners.get("ses-1")!].forEach(fn => fn({
-      type: "session.status",
-      properties: { sessionID: "ses-1", status: { type: "idle" } },
-    }))
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
 
     await handlerPromise
 
@@ -1425,10 +1610,12 @@ describe("createMessageHandler — 404 session self-healing", () => {
 
     // Fire SessionIdle to complete the flow
     ;[...deps.eventListeners.entries()].forEach(([, listeners]) => {
-      [...listeners].forEach(fn => fn({
-        type: "session.status",
-        properties: { sessionID: "ses-new", status: { type: "idle" } },
-      }))
+      [...listeners].forEach((fn) => {
+        fn({
+          type: "session.status",
+          properties: { sessionID: "ses-new", status: { type: "idle" } },
+        })
+      })
     })
 
     await handlerPromise
