@@ -40,7 +40,7 @@ export interface FeishuApiClient {
   getBotInfo(): Promise<{ app_name: string; open_id: string }>
   uploadImage(imageData: Buffer, imageType?: string): Promise<string>
   uploadFile(fileData: Buffer, fileName: string, fileType?: string): Promise<string>
-  getChatInfo(chatId: string): Promise<{ name: string; chat_type: string }>
+  getChatInfo(chatId: string): Promise<{ name: string; chat_type: string; user_count: number }>
   getUserInfo(userId: string): Promise<{ name: string }>
 }
 
@@ -146,7 +146,7 @@ export function createFeishuApiClient(options: FeishuApiClientOptions): FeishuAp
   // ── Caches for chat/user info (TTL-based) ──
   const CACHE_TTL_MS = 10 * 60 * 1000 // 10 minutes
   const MAX_CACHE_SIZE = 200
-  const chatInfoCache = new Map<string, { value: { name: string; chat_type: string }; ts: number }>()
+  const chatInfoCache = new Map<string, { value: { name: string; chat_type: string; user_count: number }; ts: number }>()
   const userInfoCache = new Map<string, { value: { name: string }; ts: number }>()
   async function getToken(): Promise<string> {
     const now = Date.now()
@@ -330,10 +330,11 @@ export function createFeishuApiClient(options: FeishuApiClientOptions): FeishuAp
         return cached.value
       }
       const resp = await apiRequest("GET", `/im/v1/chats/${chatId}`)
-      const chatData = resp.data as { name?: string; chat_type?: string } | undefined
+      const chatData = resp.data as { name?: string; chat_type?: string; user_count?: number } | undefined
       const result = {
         name: chatData?.name ?? "",
         chat_type: chatData?.chat_type ?? "",
+        user_count: chatData?.user_count ?? 0,
       }
       chatInfoCache.set(chatId, { value: result, ts: Date.now() })
       // Evict oldest entries if cache grows too large

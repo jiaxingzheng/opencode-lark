@@ -425,7 +425,14 @@ export function createMessageHandler(
         return
       }
       const botMentioned = event.mentions?.some(m => m.id.open_id === deps.botOpenId)
-      if (!botMentioned) return
+      if (!botMentioned) {
+        const chatInfo = await feishuClient.getChatInfo(event.chat_id)
+        if (chatInfo.user_count === 1) {
+          logger.info(`Solo group detected (chat=${event.chat_id}), processing without @mention`)
+        } else {
+          return
+        }
+      }
     }
 
     // ── 2. Handle message types ──

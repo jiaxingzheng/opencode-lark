@@ -737,6 +737,66 @@ describe("createMessageHandler", () => {
   })
 
 
+  it("processes solo group messages without @mention", async () => {
+    mockFetchOk("")
+    const feishuClient = createMockFeishuClient()
+    ;(feishuClient.getChatInfo as ReturnType<typeof vi.fn>).mockResolvedValue({
+      name: "Solo Group",
+      chat_type: "group",
+      user_count: 1,
+    })
+    const deps = makeDeps({ botOpenId: "bot-1", feishuClient })
+    const { handleMessage: handler } = createMessageHandler(deps)
+
+    const handlerPromise = handler(
+      makeEvent({
+        chat_type: "group",
+        message_id: "solo-group-msg-1",
+      }),
+    )
+
+    await waitFor(() => {
+      expect(deps.eventListeners.size).toBe(1)
+    })
+
+    ;[...deps.eventListeners.get("ses-1")!].forEach((fn) => {
+      fn({
+        type: "session.status",
+        properties: { sessionID: "ses-1", status: { type: "idle" } },
+      })
+    })
+
+    await handlerPromise
+
+    expect(feishuClient.getChatInfo).toHaveBeenCalledWith("chat-1")
+    expect(deps.sessionManager.getOrCreate).toHaveBeenCalled()
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      "Solo group detected (chat=chat-1), processing without @mention",
+    )
+  })
+
+  it("skips group messages without @mention when the group has multiple humans", async () => {
+    mockFetchOk("")
+    const feishuClient = createMockFeishuClient()
+    ;(feishuClient.getChatInfo as ReturnType<typeof vi.fn>).mockResolvedValue({
+      name: "Busy Group",
+      chat_type: "group",
+      user_count: 3,
+    })
+    const deps = makeDeps({ botOpenId: "bot-1", feishuClient })
+    const { handleMessage: handler } = createMessageHandler(deps)
+
+    await handler(
+      makeEvent({
+        chat_type: "group",
+        message_id: "multi-group-msg-1",
+      }),
+    )
+
+    expect(feishuClient.getChatInfo).toHaveBeenCalledWith("chat-1")
+    expect(deps.sessionManager.getOrCreate).not.toHaveBeenCalled()
+  })
+
   it("includes Lark context with chat and sender info on first message", async () => {
     mockFetchOk("")
     const deps = makeDeps()
@@ -812,6 +872,7 @@ describe("createMessageHandler", () => {
     const feishuClient = createMockFeishuClient()
     ;(feishuClient.getChatInfo as ReturnType<typeof vi.fn>).mockResolvedValue({
       name: "My Project Group", chat_type: "group",
+      user_count: 2,
     })
     const deps = makeDeps({
       feishuClient,
