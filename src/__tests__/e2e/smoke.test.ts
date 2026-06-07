@@ -496,7 +496,7 @@ describe("session sharing", () => {
     // Assert: Lark context signature included in POST (not bind notification)
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -795,7 +795,7 @@ describe("session sharing", () => {
     // Verify first POST has full Lark context
     const fetchCalls1 = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCalls1 = fetchCalls1.filter(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCalls1.length).toBeGreaterThanOrEqual(1)
     const firstBody = JSON.parse((postCalls1[0]![1] as { body: string }).body)
@@ -829,7 +829,7 @@ describe("session sharing", () => {
     // Second POST should have lightweight tag (not full context)
     const fetchCalls2 = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCalls2 = fetchCalls2.filter(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCalls2.length).toBeGreaterThanOrEqual(2)
     const secondBody = JSON.parse((postCalls2[1]![1] as { body: string }).body)

@@ -72,9 +72,21 @@ function makeDeps(overrides: Partial<HandlerDeps> = {}): HandlerDeps {
 }
 
 function mockFetchOk(body = ""): void {
-  globalThis.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    text: () => Promise.resolve(body),
+  globalThis.fetch = vi.fn().mockImplementation(async (input: unknown, init?: RequestInit) => {
+    // isSessionBusy does GET /session/{id}/message — return an empty list so
+    // the handler treats the session as not-busy and proceeds to POST.
+    if (init?.method === undefined || init.method === "GET") {
+      return {
+        ok: true,
+        text: () => Promise.resolve("[]"),
+        json: () => Promise.resolve([]),
+      }
+    }
+    return {
+      ok: true,
+      text: () => Promise.resolve(body),
+      json: () => Promise.resolve([]),
+    }
   }) as any
 }
 
@@ -83,6 +95,7 @@ function mockFetchError(status = 500): void {
     ok: false,
     status,
     text: () => Promise.resolve(""),
+    json: () => Promise.resolve({}),
   }) as any
 }
 
@@ -250,7 +263,7 @@ describe("createMessageHandler", () => {
     // Verify fetch was called with parts containing extracted text
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -292,7 +305,7 @@ describe("createMessageHandler", () => {
 
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body) as { parts: Array<{ text: string }> }
@@ -342,7 +355,7 @@ describe("createMessageHandler", () => {
 
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body) as { parts: Array<{ text: string }> }
@@ -820,7 +833,7 @@ describe("createMessageHandler", () => {
     // Verify POST body contains Lark context signature with sender info
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -859,7 +872,7 @@ describe("createMessageHandler", () => {
     // Second POST should have lightweight tag with sender name
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCalls = fetchCalls.filter(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCalls.length).toBeGreaterThanOrEqual(2)
     const secondBody = JSON.parse((postCalls[1]![1] as { body: string }).body)
@@ -908,7 +921,7 @@ describe("createMessageHandler", () => {
 
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -1117,7 +1130,7 @@ describe("createMessageHandler", () => {
     // Verify the POST body contains quoted context
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -1154,7 +1167,7 @@ describe("createMessageHandler", () => {
     // Should still have sent the original message without quoted context
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -1220,7 +1233,7 @@ describe("createMessageHandler", () => {
     // Verify POST to opencode contains the file reference text
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -1259,7 +1272,7 @@ describe("createMessageHandler", () => {
 
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -1301,7 +1314,7 @@ describe("createMessageHandler", () => {
     // Verify POST to opencode contains the file reference text
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -1346,7 +1359,7 @@ describe("createMessageHandler", () => {
     expect(deps.sessionManager.getOrCreate).toHaveBeenCalled()
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -1414,7 +1427,7 @@ describe("createMessageHandler", () => {
     // Should forward specific size-limit message
     const fetchCalls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
     const postCall = fetchCalls.find(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(postCall).toBeDefined()
     const body = JSON.parse((postCall![1] as { body: string }).body)
@@ -1636,15 +1649,19 @@ describe("createMessageHandler — 404 session self-healing", () => {
 
   it("recovers from 404 by clearing mapping and retrying with new session", async () => {
     let callCount = 0
-    globalThis.fetch = vi.fn().mockImplementation(async (input: string) => {
+    globalThis.fetch = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      // busy-check does GET /session/{id}/message — return 200 with empty list (not busy)
+      if (init?.method === undefined || init.method === "GET") {
+        return { ok: true, text: () => Promise.resolve("[]"), json: () => Promise.resolve([]) }
+      }
       if (input.includes("/message")) {
         callCount++
         if (callCount === 1) {
           // First POST — 404 (stale session)
-          return { ok: false, status: 404, text: () => Promise.resolve("") }
+          return { ok: false, status: 404, text: () => Promise.resolve(""), json: () => Promise.resolve({}) }
         }
         // Retry POST — success
-        return { ok: true, text: () => Promise.resolve("") }
+        return { ok: true, text: () => Promise.resolve(""), json: () => Promise.resolve([]) }
       }
       return { ok: true, text: () => Promise.resolve("") }
     }) as any
@@ -1687,7 +1704,7 @@ describe("createMessageHandler — 404 session self-healing", () => {
     expect(sessionManager.getOrCreate).toHaveBeenCalledTimes(2)
     // Verify: 2 POSTs to /message (original + retry)
     const messagePosts = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message"),
+      (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).includes("/message") && (c[1] as RequestInit | undefined)?.method === "POST",
     )
     expect(messagePosts).toHaveLength(2)
     // Verify: self-healing logged
@@ -1697,11 +1714,12 @@ describe("createMessageHandler — 404 session self-healing", () => {
   })
 
   it("does not retry more than once on repeated 404s", async () => {
-    // Both POSTs return 404 — should fail after one retry
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
-      text: () => Promise.resolve(""),
+    // Both POSTs return 404 — should fail after one retry (busy-check GET returns 200)
+    globalThis.fetch = vi.fn().mockImplementation(async (_input: string, init?: RequestInit) => {
+      if (init?.method === undefined || init.method === "GET") {
+        return { ok: true, text: () => Promise.resolve("[]"), json: () => Promise.resolve([]) }
+      }
+      return { ok: false, status: 404, text: () => Promise.resolve(""), json: () => Promise.resolve({}) }
     }) as any
 
     const sessionManager = {
@@ -1755,15 +1773,19 @@ describe("createMessageHandler — streaming 404 session self-healing", () => {
   it("streaming branch: 404 triggers session switch with new listener on new session", async () => {
     // Setup: first POST returns 404 (stale session), second POST succeeds on new session
     let postCallCount = 0
-    globalThis.fetch = vi.fn().mockImplementation(async (input: string) => {
+    globalThis.fetch = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
+      // busy-check does GET /session/{id}/message — return 200 with empty list (not busy)
+      if (init?.method === undefined || init.method === "GET") {
+        return { ok: true, text: () => Promise.resolve("[]"), json: () => Promise.resolve([]) }
+      }
       if (input.includes("/message")) {
         postCallCount++
         if (postCallCount === 1) {
           // First POST — 404 (stale session)
-          return { ok: false, status: 404, text: () => Promise.resolve("") }
+          return { ok: false, status: 404, text: () => Promise.resolve(""), json: () => Promise.resolve({}) }
         }
         // Second POST — success (new session)
-        return { ok: true, text: () => Promise.resolve("") }
+        return { ok: true, text: () => Promise.resolve(""), json: () => Promise.resolve([]) }
       }
       return { ok: true, text: () => Promise.resolve("") }
     }) as any
@@ -1830,11 +1852,12 @@ describe("createMessageHandler — streaming 404 session self-healing", () => {
   })
 
   it("streaming branch: does not retry more than once on repeated 404s", async () => {
-    // Both POSTs return 404
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
-      text: () => Promise.resolve(""),
+    // Both POSTs return 404 (busy-check GET returns 200 with empty list)
+    globalThis.fetch = vi.fn().mockImplementation(async (_input: string, init?: RequestInit) => {
+      if (init?.method === undefined || init.method === "GET") {
+        return { ok: true, text: () => Promise.resolve("[]"), json: () => Promise.resolve([]) }
+      }
+      return { ok: false, status: 404, text: () => Promise.resolve(""), json: () => Promise.resolve({}) }
     }) as any
 
     const sessionManager = {

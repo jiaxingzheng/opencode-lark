@@ -48,7 +48,7 @@ export interface StreamingBridge {
 // ── Constants ──
 
 
-const FIRST_EVENT_TIMEOUT_MS = 5 * 60 * 1_000 // 5 minutes — long tasks may take minutes before first SSE event
+const FIRST_EVENT_TIMEOUT_MS = 90 * 1_000 // 90 seconds — if no SSE event arrives this fast the upstream model is hung
 
 // ── Factory ──
 

@@ -49,7 +49,10 @@ export interface HandlerDeps {
 
 // ── Constants ──
 
-const EVENT_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
+const EVENT_TIMEOUT_MS = 90 * 1000 // 90 seconds — fail fast so user isn't left waiting on a hung model
+
+/** Per-request budget for probing session busyness + aborting a stuck call. */
+const SESSION_RECOVERY_TIMEOUT_MS = 5 * 1000
 
 /** Thrown when POST /session/{id}/message returns 404 — session no longer exists. */
 export class SessionGoneError extends Error {
@@ -141,6 +144,106 @@ function detectImageExtension(data: Buffer): "jpg" | "png" | "gif" | "webp" {
   }
 
   return "png"
+}
+
+// ── Helper: probe opencode session busyness and abort if stuck ──
+
+/**
+ * Shape of an opencode session message that we care about for busyness checks.
+ * Only the fields we need to read are declared.
+ */
+interface SessionMessageSummary {
+  info?: {
+    role?: string
+    time?: { completed?: number | null }
+    finish?: string
+  }
+}
+
+/**
+ * Ask the opencode server whether a session has an in-flight assistant
+ * message. An assistant message is "in flight" when it has no `completed`
+ * timestamp and no `finish` reason — i.e. the model started generating but
+ * never reported a finish (stop / tool-calls / error / length).
+ *
+ * Returns `false` for 404 / network errors so callers can fall through to
+ * their normal 404-recovery path.
+ */
+export async function isSessionBusy(
+  serverUrl: string,
+  sessionId: string,
+  logger: Logger,
+  timeoutMs: number = SESSION_RECOVERY_TIMEOUT_MS,
+): Promise<boolean> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const resp = await fetch(`${serverUrl}/session/${sessionId}/message`, {
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      logger.warn(
+        `isSessionBusy: GET /session/${sessionId}/message returned HTTP ${resp.status} — treating as not-busy`,
+      )
+      return false
+    }
+    const messages = (await resp.json()) as SessionMessageSummary[]
+    if (!Array.isArray(messages) || messages.length === 0) return false
+
+    // Walk from newest to oldest; the newest message decides busyness.
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]?.info
+      if (!m) continue
+      if (m.role !== "assistant") break // only the freshest assistant matters
+      const completed = m.time?.completed
+      const finish = m.finish
+      if (!completed && !finish) {
+        logger.info(
+          `isSessionBusy: session ${sessionId} has in-flight assistant message`,
+        )
+        return true
+      }
+      return false
+    }
+    return false
+  } catch (err) {
+    logger.warn(
+      `isSessionBusy: probe failed for ${sessionId} (${err}) — treating as not-busy`,
+    )
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** POST /session/{id}/abort. Best-effort: logs and swallows on failure. */
+export async function abortSession(
+  serverUrl: string,
+  sessionId: string,
+  logger: Logger,
+  timeoutMs: number = SESSION_RECOVERY_TIMEOUT_MS,
+): Promise<boolean> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const resp = await fetch(`${serverUrl}/session/${sessionId}/abort`, {
+      method: "POST",
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      logger.warn(
+        `abortSession: POST /session/${sessionId}/abort returned HTTP ${resp.status}`,
+      )
+      return false
+    }
+    logger.info(`abortSession: aborted session ${sessionId}`)
+    return true
+  } catch (err) {
+    logger.warn(`abortSession: request failed for ${sessionId} (${err})`)
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // ── Helper: download and save file/image from Feishu ──
@@ -649,6 +752,21 @@ export function createMessageHandler(
     const postBody = JSON.stringify({ parts })
 
     async function postToOpencode(): Promise<string> {
+      // If the opencode server still has an in-flight assistant message for
+      // this session (e.g. the previous model call hung mid-generation), the
+      // server will silently buffer our new POST behind it and never respond.
+      // Detect that case up front and abort the stuck call first.
+      const busy = await isSessionBusy(serverUrl, currentSessionId, logger)
+      if (busy) {
+        logger.warn(
+          `Session ${currentSessionId} is busy with a previous call — aborting before POST`,
+        )
+        await abortSession(serverUrl, currentSessionId, logger)
+        // Small grace period so the server can settle the aborted message
+        // before we POST again. Without this the abort and our POST can race.
+        await new Promise((r) => setTimeout(r, 250))
+      }
+
       const url = `${serverUrl}/session/${currentSessionId}/message`
       const resp = await fetch(url, {
         method: "POST",
