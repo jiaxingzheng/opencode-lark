@@ -26,7 +26,6 @@ import type { CardKitClient } from "../../feishu/cardkit-client.js"
 import type { Logger } from "../../utils/logger.js"
 import type { FeishuMessageEvent, FeishuCardAction } from "../../types.js"
 import { buildResponseCard } from "../../feishu/card-builder.js"
-import { StreamingCardSession } from "../../streaming/streaming-card.js"
 import { createFeishuWSGateway } from "../../feishu/ws-client.js"
 
 // ── Dependencies ──
@@ -153,12 +152,9 @@ export class FeishuPlugin extends BaseChannelPlugin {
     // 5. Streaming adapter
     this.streaming = {
       createStreamingSession: (target: StreamTarget): StreamingSession => {
-        const _cardSession = new StreamingCardSession({
-          cardkitClient: this.cardkitClient,
-          feishuClient: this.feishuClient,
-          chatId: target.address,
-        })
-
+        // Real card lifecycle is owned by StreamingBridge in
+        // src/handler/streaming-integration.ts. This adapter just
+        // records the session for the channel abstraction.
         const sessionId = `feishu_stream_${Date.now()}`
         const session: StreamingSession = {
           sessionId,
@@ -166,7 +162,8 @@ export class FeishuPlugin extends BaseChannelPlugin {
           pendingUpdates: [],
           createdAt: Date.now(),
           flush: async () => {
-            // No-op: flush is handled by tool status cards
+            // No-op: actual card updates are driven by SSE events in
+            // StreamingBridge, not by this adapter.
           },
         }
         return session

@@ -7,7 +7,11 @@ import type { EventProcessor } from "../streaming/event-processor.js"
 import type { QuestionAsked, PermissionRequested } from "../streaming/event-processor.js"
 import type { EventListenerMap } from "../utils/event-listeners.js"
 import { addListener, removeListener } from "../utils/event-listeners.js"
-import { StreamingCardSession } from "../streaming/streaming-card.js"
+import {
+  AnswerCardSession,
+  ReasoningCardSession,
+  ToolsCardSession,
+} from "../streaming/streaming-card.js"
 import type { OutboundMediaHandler } from "./outbound-media.js"
 import type { ExpiringSet } from "../utils/expiring-set.js"
 import type { InteractiveCardRegistry } from "../feishu/interactive-card-registry.js"
@@ -64,22 +68,12 @@ export function createStreamingBridge(
       messageId: string,
       reactionId: string | null,
     ): Promise<void> {
-      let card: StreamingCardSession | null = null
-      let cardStartPromise: Promise<void> | null = null
+      // Three independent cards, each lazy-started on its first event.
+      const answerCard = new AnswerCardSession({ cardkitClient, feishuClient, chatId })
+      const reasoningCard = new ReasoningCardSession({ cardkitClient, feishuClient, chatId })
+      const toolsCard = new ToolsCardSession({ cardkitClient, feishuClient, chatId })
 
-      const ensureCard = (): void => {
-        if (card || cardStartPromise) return
-        card = new StreamingCardSession({
-          cardkitClient,
-          feishuClient,
-          chatId,
-        })
-        cardStartPromise = card.start().then(() => {
-          logger.info(
-            `Streaming card started for session ${sessionId} in chat ${chatId}`,
-          )
-        })
-      }
+      const started: string[] = [] // for logging on SessionIdle
 
       return new Promise<void>((resolve, reject) => {
         let textBuffer = ""
@@ -115,72 +109,45 @@ export function createStreamingBridge(
               if (textBuffer.length > 102_400) {
                 textBuffer = textBuffer.slice(0, 102_400) + "\n\n…(内容过长，已截断)"
               }
-              ensureCard()
-              if (cardStartPromise) {
-                cardStartPromise.then(() => {
-                  card!.appendText(action.text).catch((err) => {
-                    logger.warn(`appendText failed: ${err}`)
-                  })
-                }).catch((err) => {
-                  logger.warn(`card start for text failed: ${err}`)
-                })
-              }
+              if (!started.includes("answer")) started.push("answer")
+              answerCard.appendText(action.text).catch((err) => {
+                logger.warn(`appendText failed: ${err}`)
+              })
               break
             }
 
             case "ReasoningDelta": {
-              ensureCard()
-              if (cardStartPromise) {
-                cardStartPromise.then(() => {
-                  card!.appendReasoning(action.text).catch((err) => {
-                    logger.warn(`appendReasoning failed: ${err}`)
-                  })
-                }).catch((err) => {
-                  logger.warn(`card start for reasoning failed: ${err}`)
+              if (!started.includes("reasoning")) started.push("reasoning")
+              reasoningCard.appendReasoning(action.text).catch((err) => {
+                logger.warn(`appendReasoning failed: ${err}`)
+              })
+              break
+            }
+
+            case "ToolStateChange": {
+              if (!started.includes("tools")) started.push("tools")
+              toolsCard.setToolStatus(
+                action.toolName,
+                action.state as "running" | "completed" | "error",
+                action.title,
+              ).catch((err) => logger.warn(`setToolStatus failed: ${err}`))
+              if (action.input !== undefined) {
+                toolsCard.setToolInput(action.toolName, action.input).catch((err) => {
+                  logger.warn(`setToolInput failed: ${err}`)
+                })
+              }
+              if (typeof action.output === "string") {
+                toolsCard.setToolOutput(action.toolName, action.output).catch((err) => {
+                  logger.warn(`setToolOutput failed: ${err}`)
+                })
+              }
+              if (typeof action.error === "string") {
+                toolsCard.setToolError(action.toolName, action.error).catch((err) => {
+                  logger.warn(`setToolError failed: ${err}`)
                 })
               }
               break
             }
-
-            case "ToolStateChange":
-              ensureCard()
-              if (cardStartPromise) {
-                cardStartPromise.then(() => {
-                  card!
-                    .setToolStatus(
-                      action.toolName,
-                      action.state as "running" | "completed" | "error",
-                      action.title,
-                    )
-                    .catch((err) => {
-                      logger.warn(`setToolStatus failed: ${err}`)
-                    })
-                  if (action.input !== undefined) {
-                    card!
-                      .setToolInput(action.toolName, action.input)
-                      .catch((err) => {
-                        logger.warn(`setToolInput failed: ${err}`)
-                      })
-                  }
-                  if (typeof action.output === "string") {
-                    card!
-                      .setToolOutput(action.toolName, action.output)
-                      .catch((err) => {
-                        logger.warn(`setToolOutput failed: ${err}`)
-                      })
-                  }
-                  if (typeof action.error === "string") {
-                    card!
-                      .setToolError(action.toolName, action.error)
-                      .catch((err) => {
-                        logger.warn(`setToolError failed: ${err}`)
-                      })
-                  }
-                }).catch((err) => {
-                  logger.warn(`card start for tool failed: ${err}`)
-                })
-              }
-              break
 
             case "SubtaskDiscovered": {
               subAgentTracker
@@ -272,43 +239,35 @@ export function createStreamingBridge(
               clearTimeout(firstEventTimer)
               removeListener(eventListeners, sessionId, myListener)
               const responseText = textBuffer.trim() || "（无回复）"
-              const closeCard = card
-                ? (cardStartPromise ?? Promise.resolve()).then(() => card!.close())
-                : Promise.resolve()
-              closeCard
-                .then(async () => {
+              logger.info(
+                `Closing ${started.length} card(s) for session ${sessionId}: ${started.join(", ") || "(none)"}`,
+              )
+              void (async () => {
+                const results = await Promise.allSettled([
+                  answerCard.close(),
+                  reasoningCard.close(),
+                  toolsCard.close(),
+                ])
+                for (const r of results) {
+                  if (r.status === "rejected") {
+                    logger.warn(`card.close() failed: ${r.reason}`)
+                  }
+                }
+                try {
+                  await sendFinalResponse(responseText)
+                } catch (err) {
+                  logger.warn(`sendFinalResponse failed: ${err}`)
+                }
+                if (deps.outboundMedia) {
                   try {
-                    await sendFinalResponse(responseText)
+                    await deps.outboundMedia.sendDetectedFiles(chatId, responseText)
                   } catch (err) {
-                    logger.warn(`sendFinalResponse failed: ${err}`)
+                    logger.warn(`outboundMedia.sendDetectedFiles failed: ${err}`)
                   }
-                  if (deps.outboundMedia) {
-                    try {
-                      await deps.outboundMedia.sendDetectedFiles(chatId, responseText)
-                    } catch (err) {
-                      logger.warn(`outboundMedia.sendDetectedFiles failed: ${err}`)
-                    }
-                  }
-                  onComplete(responseText)
-                  resolve()
-                })
-                .catch(async (err) => {
-                  logger.warn(`card.close() failed: ${err}`)
-                  try {
-                    await sendFinalResponse(responseText)
-                  } catch (replyErr) {
-                    logger.warn(`sendFinalResponse failed after card.close error: ${replyErr}`)
-                  }
-                  if (deps.outboundMedia) {
-                    try {
-                      await deps.outboundMedia.sendDetectedFiles(chatId, responseText)
-                    } catch (mediaErr) {
-                      logger.warn(`outboundMedia.sendDetectedFiles failed: ${mediaErr}`)
-                    }
-                  }
-                  onComplete(responseText)
-                  resolve()
-                })
+                }
+                onComplete(responseText)
+                resolve()
+              })()
               break
             }
 
@@ -317,7 +276,7 @@ export function createStreamingBridge(
           }
         }
 
-        const firstEventTimer = setTimeout(async () => {
+        const firstEventTimer = setTimeout(() => {
           if (gotFirstEvent || settled) return
           settled = true
           removeListener(eventListeners, sessionId, myListener)
@@ -325,26 +284,37 @@ export function createStreamingBridge(
             `No SSE events received within ${FIRST_EVENT_TIMEOUT_MS}ms for ${sessionId}, falling back to sync response`,
           )
           const fallbackText = parseSyncResponse(syncResponseBody, logger)
-          try {
-            if (card) await card.close(fallbackText)
-          } catch (err) {
-            logger.warn(`card.close() in timeout fallback failed: ${err}`)
-          }
-          // Send fallback text as reply
-          try {
-            await sendFinalResponse(fallbackText)
-          } catch (err) {
-            logger.warn(`sendFinalResponse in timeout fallback failed: ${err}`)
-          }
-          if (deps.outboundMedia) {
+          void (async () => {
             try {
-              await deps.outboundMedia.sendDetectedFiles(chatId, fallbackText)
-            } catch (mediaErr) {
-              logger.warn(`outboundMedia.sendDetectedFiles in timeout fallback failed: ${mediaErr}`)
+              await answerCard.setFinalText(fallbackText)
+            } catch (err) {
+              logger.warn(`setFinalText in timeout fallback failed: ${err}`)
             }
-          }
-          onComplete(fallbackText)
-          resolve()
+            const results = await Promise.allSettled([
+              answerCard.close(),
+              reasoningCard.close(),
+              toolsCard.close(),
+            ])
+            for (const r of results) {
+              if (r.status === "rejected") {
+                logger.warn(`card.close() in timeout fallback failed: ${r.reason}`)
+              }
+            }
+            try {
+              await sendFinalResponse(fallbackText)
+            } catch (err) {
+              logger.warn(`sendFinalResponse in timeout fallback failed: ${err}`)
+            }
+            if (deps.outboundMedia) {
+              try {
+                await deps.outboundMedia.sendDetectedFiles(chatId, fallbackText)
+              } catch (mediaErr) {
+                logger.warn(`outboundMedia.sendDetectedFiles in timeout fallback failed: ${mediaErr}`)
+              }
+            }
+            onComplete(fallbackText)
+            resolve()
+          })()
         }, FIRST_EVENT_TIMEOUT_MS)
 
         // Register event listener BEFORE the POST to avoid race condition
@@ -358,7 +328,7 @@ export function createStreamingBridge(
               `POST completed for session ${sessionId} (${responseBody.length} bytes)`,
             )
           })
-          .catch((err) => {
+          .catch(async (err) => {
             if (settled) return
             // If SSE events have been flowing, the POST timeout is expected
             // (e.g. agent blocked on question/permission). Keep the listener alive.
@@ -369,7 +339,7 @@ export function createStreamingBridge(
             settled = true
             clearTimeout(firstEventTimer)
             removeListener(eventListeners, sessionId, myListener)
-            if (card) card.close().catch(() => {})
+            await Promise.allSettled([answerCard.close(), reasoningCard.close(), toolsCard.close()])
             reject(err)
           })
       })

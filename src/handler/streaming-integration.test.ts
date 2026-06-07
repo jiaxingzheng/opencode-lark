@@ -465,7 +465,7 @@ describe("createStreamingBridge", () => {
     expect(eventListeners.size).toBe(0)
   })
 
-  it("throws when card.start() fails (for fallback in caller)", async () => {
+  it("logs warn and completes gracefully when card.start() fails", async () => {
     const deps = makeDeps({
       feishuClient: {
         ...createMockFeishuClient(),
@@ -492,7 +492,7 @@ describe("createStreamingBridge", () => {
 
     const listener = [...eventListeners.get("ses-1")!][0]!
 
-    // Inject ToolStateChange to trigger card creation, which will attempt sendMessage and fail
+    // Inject ToolStateChange to trigger toolsCard.start(), which will attempt sendMessage and fail
     listener({
       type: "message.part.updated",
       properties: {
@@ -506,7 +506,7 @@ describe("createStreamingBridge", () => {
       },
     })
 
-    // Small delay to let async card.start() attempt
+    // Small delay to let async toolsCard.start() attempt and reject
     await new Promise((r) => setTimeout(r, 50))
 
     // Now complete the session
@@ -515,14 +515,14 @@ describe("createStreamingBridge", () => {
       properties: { sessionID: "ses-1", status: { type: "idle" } },
     })
 
-    // The bridge should gracefully handle the sendMessage failure from card.start()
+    // The bridge should gracefully handle the sendMessage failure from toolsCard.start()
     // and still resolve (not reject)
     await handlePromise
 
-    // Verify the handler completed with a response despite card.start() failure
+    // Verify the handler completed with a response despite toolsCard.start() failure
     expect(onComplete).toHaveBeenCalledWith("（无回复）")
     expect(deps.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("card start for tool failed"),
+      expect.stringContaining("setToolStatus failed"),
     )
     expect(eventListeners.size).toBe(0)
   })
@@ -585,7 +585,7 @@ describe("createStreamingBridge", () => {
     expect((deps.cardkitClient as any).closeStreaming).toHaveBeenCalled()
   })
 
-  it("logs info when streaming card starts", async () => {
+  it("logs info with which cards were started and closed on SessionIdle", async () => {
     const deps = makeDeps({
       feishuClient: {
         ...createMockFeishuClient(),
@@ -616,7 +616,14 @@ describe("createStreamingBridge", () => {
 
     const listener = [...eventListeners.get("ses-1")!][0]!
 
-    // Inject ToolStateChange to trigger card creation
+    // Inject text + tool events to start 2 of the 3 cards
+    listener({
+      type: "message.part.updated",
+      properties: {
+        part: { sessionID: "ses-1", messageID: "m-1", type: "text", text: "hi" },
+        delta: "hi",
+      },
+    })
     listener({
       type: "message.part.updated",
       properties: {
@@ -630,8 +637,8 @@ describe("createStreamingBridge", () => {
       },
     })
 
-    // Small delay to let async card.start() resolve and log
-    await new Promise((r) => setTimeout(r, 10))
+    // Small delay to let async card.start()s resolve
+    await new Promise((r) => setTimeout(r, 20))
 
     listener({
       type: "session.status",
@@ -641,7 +648,13 @@ describe("createStreamingBridge", () => {
     await handlePromise
 
     expect(deps.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("Streaming card started"),
+      expect.stringMatching(/Closing 2 card\(s\)/),
+    )
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("answer"),
+    )
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("tools"),
     )
   })
 
