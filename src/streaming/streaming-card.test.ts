@@ -5,7 +5,8 @@ import {
   ToolsCardSession,
 } from "./streaming-card.js"
 import type { CardKitClient, CardKitSchema } from "../feishu/cardkit-client.js"
-import { createMockFeishuClient } from "../__tests__/setup.js"
+import { CardKitError } from "../feishu/cardkit-client.js"
+import { createMockFeishuClient, createMockLogger } from "../__tests__/setup.js"
 
 function createMockCardKitClient(): CardKitClient & {
   createCard: ReturnType<typeof vi.fn>
@@ -310,7 +311,10 @@ describe("ToolsCardSession", () => {
     await session.start()
     const schema = cardkitClient.createCard.mock.calls[0]![0] as CardKitSchema
     expect(schema.config.summary.content).toBe("[Tools...]")
-    expect(schema.body.elements[0]!.content).toBe("🔧 _准备调用工具…_")
+    // Minimal initial body so a frozen (CardKit streaming-timeout) card
+    // shows just the icon + header instead of a stale "preparing tools…"
+    // placeholder.
+    expect(schema.body.elements[0]!.content).toBe("🔧")
   })
 
   it("setToolStatus starts lazily and renders tool with state icon", async () => {
@@ -540,5 +544,94 @@ describe("lazy start (no card if no events)", () => {
     })
     await session.close()
     expect(cardkitClient.createCard).not.toHaveBeenCalled()
+  })
+})
+
+// ── CardKit streaming timeout handling ───────────────────────────────
+
+describe("BaseCardSession streaming-timeout handling", () => {
+  function setupMockWithTimeout() {
+    const cardkitClient = createMockCardKitClient()
+    cardkitClient.updateElement = vi
+      .fn()
+      .mockRejectedValue(new CardKitError(230020, "card streaming timeout"))
+    cardkitClient.closeStreaming = vi
+      .fn()
+      .mockRejectedValue(new CardKitError(230020, "card streaming timeout"))
+    const feishuClient = makeFeishuWithMessage()
+    return { cardkitClient, feishuClient }
+  }
+
+  it("enqueueUpdate swallows CardKit streaming-timeout and freezes the card", async () => {
+    const { cardkitClient, feishuClient } = setupMockWithTimeout()
+    const logger = createMockLogger()
+    const session = new AnswerCardSession({
+      cardkitClient: cardkitClient as any,
+      feishuClient,
+      chatId: "chat_789",
+      logger,
+    })
+    await session.appendText("hello")
+    await settle()
+    // First update should have been attempted (and failed with timeout).
+    expect(cardkitClient.updateElement).toHaveBeenCalled()
+    // Logger should have been notified exactly once.
+    const freezeWarns = (logger.warn as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === "string" && c[0].includes("frozen by CardKit streaming timeout"),
+    )
+    expect(freezeWarns).toHaveLength(1)
+  })
+
+  it("subsequent appendText after freeze is a no-op (no extra updateElement calls)", async () => {
+    const { cardkitClient, feishuClient } = setupMockWithTimeout()
+    const session = new AnswerCardSession({
+      cardkitClient: cardkitClient as any,
+      feishuClient,
+      chatId: "chat_789",
+    })
+    await session.appendText("first")
+    await settle()
+    const callsAfterFreeze = (cardkitClient.updateElement as ReturnType<typeof vi.fn>).mock.calls.length
+    await session.appendText("ignored-1")
+    await session.appendText("ignored-2")
+    await settle()
+    expect(cardkitClient.updateElement).toHaveBeenCalledTimes(callsAfterFreeze)
+  })
+
+  it("close() skips final update and closeStreaming when card is frozen", async () => {
+    const { cardkitClient, feishuClient } = setupMockWithTimeout()
+    const session = new AnswerCardSession({
+      cardkitClient: cardkitClient as any,
+      feishuClient,
+      chatId: "chat_789",
+    })
+    await session.appendText("payload")
+    await settle()
+    // Card should be frozen by now; close() should not invoke closeStreaming
+    // (it would also fail with the same timeout).
+    await session.close()
+    expect(cardkitClient.closeStreaming).not.toHaveBeenCalled()
+  })
+
+  it("non-timeout errors are rethrown out of enqueueUpdate", async () => {
+    const cardkitClient = createMockCardKitClient()
+    const otherError = new CardKitError(230001, "permission denied")
+    cardkitClient.updateElement = vi.fn().mockRejectedValue(otherError)
+    const feishuClient = makeFeishuWithMessage()
+    const logger = createMockLogger()
+    const session = new AnswerCardSession({
+      cardkitClient: cardkitClient as any,
+      feishuClient,
+      chatId: "chat_789",
+      logger,
+    })
+    // The first appendText triggers the failed updateElement — that error
+    // must propagate out of the await chain.
+    await expect(session.appendText("trigger")).rejects.toThrow("permission denied")
+    // Logger should NOT have logged a freeze event for this non-timeout error.
+    const freezeWarns = (logger.warn as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) => typeof c[0] === "string" && c[0].includes("frozen by CardKit streaming timeout"),
+    )
+    expect(freezeWarns).toHaveLength(0)
   })
 })

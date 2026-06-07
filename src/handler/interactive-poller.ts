@@ -245,8 +245,23 @@ export function createInteractivePoller(
     for (const card of trackedCards) {
       if (card.state !== "sent") continue
       if (card.kind === "question") {
-        if (!pendingQuestions || pendingQuestions.has(card.requestId)) continue
-      } else if (!pendingPermissions || pendingPermissions.has(card.requestId)) {
+        // Only mark as answered when we have a non-empty pending set that
+        // positively excludes this id. If the poll failed (null) or returned
+        // an empty set, we cannot distinguish "no questions" from "poller
+        // got transient stale data" — leave the card alone and let the next
+        // poll decide.
+        if (
+          !pendingQuestions ||
+          pendingQuestions.size === 0 ||
+          pendingQuestions.has(card.requestId)
+        ) {
+          continue
+        }
+      } else if (
+        !pendingPermissions ||
+        pendingPermissions.size === 0 ||
+        pendingPermissions.has(card.requestId)
+      ) {
         continue
       }
 

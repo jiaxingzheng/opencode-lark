@@ -17,7 +17,9 @@
  */
 
 import type { CardKitClient, CardKitSchema } from "../feishu/cardkit-client.js"
+import { CardKitError } from "../feishu/cardkit-client.js"
 import type { FeishuApiClient } from "../feishu/api-client.js"
+import type { Logger } from "../utils/logger.js"
 
 // ── Shared base ──────────────────────────────────────────────────────
 
@@ -27,6 +29,29 @@ export interface BaseCardOptions {
   chatId: string
   /** Cap on the rendered content body (default 80_000). */
   maxContentChars?: number
+  /** Optional logger; used to report streaming-timeout freeze events. */
+  logger?: Logger
+}
+
+/**
+ * Heuristic: CardKit returns errors like "card streaming timeout" once the
+ * card has been left in streaming mode past the server-side limit (~30s).
+ * After that point the card is frozen on the server side — any further
+ * updateElement / closeStreaming calls return the same error. We detect
+ * these errors and stop retrying so we don't spam the log.
+ */
+function isStreamingTimeoutError(err: unknown): boolean {
+  if (err instanceof CardKitError) {
+    return /streaming\s+timeout|card\s+stream|streaming_mode|streaming\s+closed|stream\s+closed/i.test(
+      err.message,
+    )
+  }
+  if (err instanceof Error) {
+    return /streaming\s+timeout|card\s+stream|streaming_mode|streaming\s+closed|stream\s+closed/i.test(
+      err.message,
+    )
+  }
+  return false
 }
 
 interface CardState {
@@ -42,9 +67,17 @@ export abstract class BaseCardSession {
   protected readonly feishuClient: FeishuApiClient
   protected readonly chatId: string
   protected readonly maxContentChars: number
+  protected readonly logger: Logger | undefined
 
   protected state: CardState | null = null
   protected closed = false
+  /**
+   * Set when the server has frozen the card due to a CardKit streaming
+   * timeout. After this point updateElement / closeStreaming calls are
+   * no-ops so we stop the warning-spam and leave the card at its last
+   * rendered state.
+   */
+  protected frozen = false
   protected queue: Promise<void> = Promise.resolve()
 
   protected constructor(options: BaseCardOptions) {
@@ -52,6 +85,7 @@ export abstract class BaseCardSession {
     this.feishuClient = options.feishuClient
     this.chatId = options.chatId
     this.maxContentChars = options.maxContentChars ?? 80_000
+    this.logger = options.logger
   }
 
   get isActive(): boolean {
@@ -108,20 +142,28 @@ export abstract class BaseCardSession {
   /** Push the current content to the card, throttled by the shared queue. */
   protected async enqueueUpdate(): Promise<void> {
     this.queue = this.queue.then(async () => {
-      if (!this.state || this.closed) return
+      if (!this.state || this.closed || this.frozen) return
       const raw = this.currentContent()
       const content = raw.length > this.maxContentChars
         ? raw.slice(0, this.maxContentChars) + "\n\n…(内容过长，已截断)"
         : raw
       if (content === this.state.lastSentContent) return
       this.state.sequence += 1
-      await this.cardkitClient.updateElement(
-        this.state.cardId,
-        "content",
-        content,
-        this.state.sequence,
-      )
-      this.state.lastSentContent = content
+      try {
+        await this.cardkitClient.updateElement(
+          this.state.cardId,
+          "content",
+          content,
+          this.state.sequence,
+        )
+        this.state.lastSentContent = content
+      } catch (err) {
+        if (isStreamingTimeoutError(err)) {
+          this.freezeFromTimeout("updateElement")
+          return
+        }
+        throw err
+      }
     })
     await this.queue
   }
@@ -131,6 +173,16 @@ export abstract class BaseCardSession {
     this.closed = true
     await this.queue
 
+    // If the server already froze the card, every further write will fail
+    // with the same timeout. Skip the final update and close entirely —
+    // the card will stay at its last successfully-rendered state.
+    if (this.frozen) {
+      this.logger?.info(
+        `card ${this.state.cardId} skipped close (already frozen by CardKit streaming timeout)`,
+      )
+      return
+    }
+
     // Make sure the latest content is on the wire before we close.
     const raw = this.currentContent()
     const content = raw.length > this.maxContentChars
@@ -138,19 +190,50 @@ export abstract class BaseCardSession {
       : raw
     if (content && content !== this.state.lastSentContent) {
       this.state.sequence += 1
-      await this.cardkitClient.updateElement(
-        this.state.cardId,
-        "content",
-        content,
-        this.state.sequence,
-      )
+      try {
+        await this.cardkitClient.updateElement(
+          this.state.cardId,
+          "content",
+          content,
+          this.state.sequence,
+        )
+        this.state.lastSentContent = content
+      } catch (err) {
+        if (isStreamingTimeoutError(err)) {
+          this.freezeFromTimeout("updateElement")
+          return
+        }
+        throw err
+      }
     }
 
     this.state.sequence += 1
-    await this.cardkitClient.closeStreaming(
-      this.state.cardId,
-      this.closeSummary(),
-      this.state.sequence,
+    try {
+      await this.cardkitClient.closeStreaming(
+        this.state.cardId,
+        this.closeSummary(),
+        this.state.sequence,
+      )
+    } catch (err) {
+      if (isStreamingTimeoutError(err)) {
+        this.freezeFromTimeout("closeStreaming")
+        return
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Mark the card as frozen so subsequent updateElement / closeStreaming
+   * calls become no-ops, and log the event once. The card stays in the
+   * chat at its last successfully-rendered content.
+   */
+  private freezeFromTimeout(op: string): void {
+    if (this.frozen) return
+    this.frozen = true
+    this.closed = true
+    this.logger?.warn(
+      `card ${this.state?.cardId ?? "?"} frozen by CardKit streaming timeout during ${op}; further updates skipped`,
     )
   }
 }
@@ -378,7 +461,7 @@ export class ToolsCardSession extends BaseCardSession {
   }
 
   protected initialContent(): string {
-    return "🔧 _准备调用工具…_"
+    return "🔧"
   }
 
   protected currentContent(): string {

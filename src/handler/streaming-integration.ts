@@ -69,9 +69,9 @@ export function createStreamingBridge(
       reactionId: string | null,
     ): Promise<void> {
       // Three independent cards, each lazy-started on its first event.
-      const answerCard = new AnswerCardSession({ cardkitClient, feishuClient, chatId })
-      const reasoningCard = new ReasoningCardSession({ cardkitClient, feishuClient, chatId })
-      const toolsCard = new ToolsCardSession({ cardkitClient, feishuClient, chatId })
+      const answerCard = new AnswerCardSession({ cardkitClient, feishuClient, chatId, logger })
+      const reasoningCard = new ReasoningCardSession({ cardkitClient, feishuClient, chatId, logger })
+      const toolsCard = new ToolsCardSession({ cardkitClient, feishuClient, chatId, logger })
 
       const started: string[] = [] // for logging on SessionIdle
 

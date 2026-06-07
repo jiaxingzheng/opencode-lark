@@ -516,7 +516,17 @@ describe("interactive-poller", () => {
       poller.start()
       await advanceTimers(0)
 
-      globalThis.fetch = mockFetchPerUrl(okJson([]), okJson([]))
+      // Simulate the opencode server reporting a different (non-empty) set
+      // of pending questions — q_1 is no longer among them, meaning the
+      // user resolved it in the TUI.
+      const otherQuestion = {
+        id: "q_2",
+        sessionID: "ses_abc",
+        questions: [
+          { question: "Other", header: "Other", options: [{ label: "A", description: "A" }] },
+        ],
+      }
+      globalThis.fetch = mockFetchPerUrl(okJson([otherQuestion]), okJson([]))
       await advanceTimers(3000)
 
       expect(deps.feishuClient.updateMessage).toHaveBeenCalledWith(
@@ -553,7 +563,16 @@ describe("interactive-poller", () => {
       poller.start()
       await advanceTimers(0)
 
-      globalThis.fetch = mockFetchPerUrl(okJson([]), okJson([]))
+      // Simulate a different (non-empty) pending permission set that
+      // excludes p_1.
+      const otherPermission = {
+        id: "p_2",
+        sessionID: "ses_abc",
+        permission: "bash",
+        patterns: ["/src/other.sh"],
+        metadata: { tool: "bash" },
+      }
+      globalThis.fetch = mockFetchPerUrl(okJson([]), okJson([otherPermission]))
       await advanceTimers(3000)
 
       expect(deps.feishuClient.updateMessage).toHaveBeenCalledWith(
@@ -565,6 +584,38 @@ describe("interactive-poller", () => {
       )
       expect(updatedCard.header.title.content).toContain("Resolved")
       expect(updatedCard.elements[0].text.content).toContain("opencode TUI")
+    })
+
+    it("does not close question cards when the poller returns an empty set", async () => {
+      // The opencode server may temporarily return [] (transient stale
+      // data, race with TUI answer, etc.). We cannot distinguish "no
+      // questions" from "poller got nothing" — leave tracked cards alone
+      // and let the next poll decide.
+      const deps = createDeps()
+      globalThis.fetch = mockFetchPerUrl(okJson([SAMPLE_QUESTION]), okJson([]))
+      const poller = createInteractivePoller(deps)
+
+      poller.start()
+      await advanceTimers(0)
+
+      globalThis.fetch = mockFetchPerUrl(okJson([]), okJson([]))
+      await advanceTimers(3000)
+
+      expect(deps.feishuClient.updateMessage).not.toHaveBeenCalled()
+    })
+
+    it("does not close permission cards when the poller returns an empty set", async () => {
+      const deps = createDeps()
+      globalThis.fetch = mockFetchPerUrl(okJson([]), okJson([SAMPLE_PERMISSION]))
+      const poller = createInteractivePoller(deps)
+
+      poller.start()
+      await advanceTimers(0)
+
+      globalThis.fetch = mockFetchPerUrl(okJson([]), okJson([]))
+      await advanceTimers(3000)
+
+      expect(deps.feishuClient.updateMessage).not.toHaveBeenCalled()
     })
 
     it("does not resolve question cards when the question endpoint failed", async () => {
