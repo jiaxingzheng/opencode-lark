@@ -1,6 +1,7 @@
 import { type Database } from "bun:sqlite"
 import { createLogger } from "../utils/logger.js"
 import type { SessionMapping } from "../types.js"
+import { parseModelSpec } from "../utils/config.js"
 
 const logger = createLogger("session-manager")
 
@@ -8,6 +9,10 @@ interface SessionManagerOptions {
   serverUrl: string
   db: Database
   defaultAgent: string
+  /** Model spec as "providerID/id" (e.g. "opencode/minimax-m3-free").
+   *  Passed into POST /session body so newly created sessions are
+   *  pinned to the configured model instead of opencode's default. */
+  defaultModel?: string
 }
 
 export interface SessionManager {
@@ -35,7 +40,21 @@ interface TuiSession {
 export function createSessionManager(
   options: SessionManagerOptions,
 ): SessionManager {
-  const { serverUrl, db, defaultAgent } = options
+  const { serverUrl, db, defaultAgent, defaultModel } = options
+
+  // Parse the configured model spec once at construction. If it fails
+  // to parse (bad format), fall back to no model override and warn —
+  // opencode will use its own default for the agent.
+  const parsedModel = defaultModel ? parseModelSpec(defaultModel) : null
+  if (defaultModel && !parsedModel) {
+    logger.warn(
+      `defaultModel "${defaultModel}" is not in "providerID/id" form — sessions will use opencode's default model`,
+    )
+  } else if (parsedModel) {
+    logger.info(
+      `New sessions will be pinned to model ${parsedModel.providerID}/${parsedModel.id}`,
+    )
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS feishu_sessions (
@@ -115,11 +134,17 @@ export function createSessionManager(
     }
   }
 
-  async function createNewSession(feishuKey: string): Promise<string> {
+  async function createNewSession(feishuKey: string, agent?: string): Promise<string> {
+    const body: Record<string, unknown> = {
+      title: `Feishu chat ${feishuKey}`,
+    }
+    if (agent ?? defaultAgent) body["agent"] = agent ?? defaultAgent
+    if (parsedModel) body["model"] = parsedModel
+
     const resp = await fetch(`${serverUrl}/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: `Feishu chat ${feishuKey}` }),
+      body: JSON.stringify(body),
     })
 
     if (!resp.ok) {
@@ -151,7 +176,7 @@ export function createSessionManager(
         return discovered.id
       }
 
-      const sessionId = await createNewSession(feishuKey)
+      const sessionId = await createNewSession(feishuKey, agent)
       const now = Date.now()
       upsertStmt.run(feishuKey, sessionId, agentName, now, now, 0)
       logger.info(`Session created: ${feishuKey} → ${sessionId}`)

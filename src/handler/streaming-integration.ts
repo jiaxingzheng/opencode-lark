@@ -115,10 +115,32 @@ export function createStreamingBridge(
               if (textBuffer.length > 102_400) {
                 textBuffer = textBuffer.slice(0, 102_400) + "\n\n…(内容过长，已截断)"
               }
+              ensureCard()
+              if (cardStartPromise) {
+                cardStartPromise.then(() => {
+                  card!.appendText(action.text).catch((err) => {
+                    logger.warn(`appendText failed: ${err}`)
+                  })
+                }).catch((err) => {
+                  logger.warn(`card start for text failed: ${err}`)
+                })
+              }
               break
             }
 
-
+            case "ReasoningDelta": {
+              ensureCard()
+              if (cardStartPromise) {
+                cardStartPromise.then(() => {
+                  card!.appendReasoning(action.text).catch((err) => {
+                    logger.warn(`appendReasoning failed: ${err}`)
+                  })
+                }).catch((err) => {
+                  logger.warn(`card start for reasoning failed: ${err}`)
+                })
+              }
+              break
+            }
 
             case "ToolStateChange":
               ensureCard()
@@ -133,6 +155,27 @@ export function createStreamingBridge(
                     .catch((err) => {
                       logger.warn(`setToolStatus failed: ${err}`)
                     })
+                  if (action.input !== undefined) {
+                    card!
+                      .setToolInput(action.toolName, action.input)
+                      .catch((err) => {
+                        logger.warn(`setToolInput failed: ${err}`)
+                      })
+                  }
+                  if (typeof action.output === "string") {
+                    card!
+                      .setToolOutput(action.toolName, action.output)
+                      .catch((err) => {
+                        logger.warn(`setToolOutput failed: ${err}`)
+                      })
+                  }
+                  if (typeof action.error === "string") {
+                    card!
+                      .setToolError(action.toolName, action.error)
+                      .catch((err) => {
+                        logger.warn(`setToolError failed: ${err}`)
+                      })
+                  }
                 }).catch((err) => {
                   logger.warn(`card start for tool failed: ${err}`)
                 })

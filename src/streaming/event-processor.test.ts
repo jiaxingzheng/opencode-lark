@@ -3,6 +3,7 @@ import {
   EventProcessor,
   type ProcessedAction,
   type TextDelta,
+  type ReasoningDelta,
   type ToolStateChange,
   type SubtaskDiscovered,
   type SessionIdle,
@@ -83,7 +84,7 @@ describe("EventProcessor", () => {
       })
     })
 
-    it("returns null for non-text field deltas", () => {
+    it("emits ReasoningDelta for reasoning field deltas", () => {
       const proc = makeProcessor()
       const result = proc.processEvent({
         type: "message.part.delta",
@@ -96,7 +97,11 @@ describe("EventProcessor", () => {
         },
       })
 
-      expect(result).toBeNull()
+      expect(result).toEqual<ReasoningDelta>({
+        type: "ReasoningDelta",
+        sessionId: "ses-1",
+        text: "thinking...",
+      })
     })
 
     it("returns null for empty delta", () => {

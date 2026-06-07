@@ -152,6 +152,7 @@ async function main(): Promise<void> {
     serverUrl,
     db: db.sessions,
     defaultAgent: config.defaultAgent,
+    defaultModel: config.defaultModel,
   })
 
   // Validate stored session mappings against the running opencode server

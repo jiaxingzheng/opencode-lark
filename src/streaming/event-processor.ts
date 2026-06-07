@@ -13,6 +13,13 @@ export interface TextDelta {
   readonly text: string
 }
 
+/** Incremental reasoning/thinking content from the model. */
+export interface ReasoningDelta {
+  readonly type: "ReasoningDelta"
+  readonly sessionId: string
+  readonly text: string
+}
+
 
 export interface ToolStateChange {
   readonly type: "ToolStateChange"
@@ -63,6 +70,7 @@ export interface PermissionRequested {
 
 export type ProcessedAction =
   | TextDelta
+  | ReasoningDelta
   | ToolStateChange
   | SubtaskDiscovered
   | SessionIdle
@@ -263,7 +271,7 @@ export class EventProcessor {
       case "text":
         return this.processTextPart(sessionId, delta)
       case "reasoning":
-        return this.processReasoningPart(sessionId, delta)
+        return this.processReasoningPart(sessionId, part)
       case "tool":
         return this.processToolPart(sessionId, part)
       case "subtask":
@@ -275,7 +283,7 @@ export class EventProcessor {
 
   private processMessagePartDelta(
     event: MessagePartDeltaEvent,
-  ): TextDelta | null {
+  ): TextDelta | ReasoningDelta | null {
     const props = event.properties
     if (!isObject(props)) return null
 
@@ -284,18 +292,23 @@ export class EventProcessor {
     if (!this.ownedSessions.has(sessionId)) return null
 
     const field = (props as Record<string, unknown>).field
-    if (field !== "text") return null
-
     const delta = (props as Record<string, unknown>).delta
     if (typeof delta !== "string" || delta.length === 0) return null
 
-    // Check if this delta belongs to a reasoning part
-    const partID = (props as Record<string, unknown>).partID
-    if (typeof partID === "string" && this.reasoningPartIds.has(partID)) {
-      return null
+    if (field === "text") {
+      // Check if this delta belongs to a reasoning part
+      const partID = (props as Record<string, unknown>).partID
+      if (typeof partID === "string" && this.reasoningPartIds.has(partID)) {
+        return { type: "ReasoningDelta", sessionId, text: delta }
+      }
+      return { type: "TextDelta", sessionId, text: delta }
     }
 
-    return { type: "TextDelta", sessionId, text: delta }
+    if (field === "reasoning") {
+      return { type: "ReasoningDelta", sessionId, text: delta }
+    }
+
+    return null
   }
 
   private processTextPart(
@@ -307,10 +320,16 @@ export class EventProcessor {
   }
 
   private processReasoningPart(
-    _sessionId: string,
-    _delta: string | undefined,
-  ): null {
-    return null
+    sessionId: string,
+    part: MessagePartUpdatedEvent["properties"]["part"],
+  ): ReasoningDelta | null {
+    // Some opencode versions emit a single message.part.updated for the
+    // reasoning part with the full text in `text` (no streaming deltas).
+    // Surface it as a single ReasoningDelta so consumers see the content
+    // even when delta-by-delta events never arrive.
+    const text = (part as Record<string, unknown>).text
+    if (typeof text !== "string" || text.length === 0) return null
+    return { type: "ReasoningDelta", sessionId, text }
   }
 
   private processToolPart(

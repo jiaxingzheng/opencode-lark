@@ -21,6 +21,12 @@
   // Common values: "build", "claude", "code" — check your opencode config for available agents.
   "defaultAgent": "build",
 
+  // Default opencode model for newly created sessions, as "<providerID>/<id>".
+  // Pinned into POST /session body so every Feishu chat starts on this model
+  // regardless of the opencode server's own default.
+  // Override via env var OPENCODE_DEFAULT_MODEL.
+  "defaultModel": "opencode/minimax-m3-free",
+
   // Data directory for SQLite database
   "dataDir": "./data",
 

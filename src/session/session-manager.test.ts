@@ -217,6 +217,105 @@ describe("session-manager", () => {
     })
   })
 
+  describe("defaultModel injection", () => {
+    it("includes agent + model in POST /session body when defaultModel is set", async () => {
+      let capturedBody: unknown = null
+      const createdId = "ses-model-1"
+      mockFetch(async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url
+        const method = init?.method ?? "GET"
+        if (url.includes("/session") && method === "POST") {
+          capturedBody = JSON.parse(init!.body as string)
+          return new Response(JSON.stringify({ id: createdId }), { status: 200 })
+        }
+        return new Response(JSON.stringify([]), { status: 200 })
+      })
+
+      sm = createSessionManager({
+        serverUrl: SERVER_URL,
+        db,
+        defaultAgent: "build",
+        defaultModel: "opencode/minimax-m3-free",
+      })
+      const result = await sm.getOrCreate("chat-model")
+
+      expect(result).toBe(createdId)
+      expect(capturedBody).toEqual({
+        title: "Feishu chat chat-model",
+        agent: "build",
+        model: { providerID: "opencode", id: "minimax-m3-free" },
+      })
+    })
+
+    it("omits model when defaultModel is unset", async () => {
+      let capturedBody: unknown = null
+      mockFetch(async (input, init) => {
+        const method = init?.method ?? "GET"
+        if (method === "POST") {
+          capturedBody = JSON.parse(init!.body as string)
+          return new Response(JSON.stringify({ id: "ses-x" }), { status: 200 })
+        }
+        return new Response(JSON.stringify([]), { status: 200 })
+      })
+
+      sm = createSessionManager({ serverUrl: SERVER_URL, db, defaultAgent: "build" })
+      await sm.getOrCreate("chat-nomodel")
+
+      const body = capturedBody as Record<string, unknown>
+      expect(body["agent"]).toBe("build")
+      expect(body).not.toHaveProperty("model")
+    })
+
+    it("warns and omits model when defaultModel has invalid format", async () => {
+      let capturedBody: unknown = null
+      mockFetch(async (input, init) => {
+        const method = init?.method ?? "GET"
+        if (method === "POST") {
+          capturedBody = JSON.parse(init!.body as string)
+          return new Response(JSON.stringify({ id: "ses-y" }), { status: 200 })
+        }
+        return new Response(JSON.stringify([]), { status: 200 })
+      })
+
+      sm = createSessionManager({
+        serverUrl: SERVER_URL,
+        db,
+        defaultAgent: "build",
+        defaultModel: "not-a-valid-spec",
+      })
+      await sm.getOrCreate("chat-bad")
+
+      const body = capturedBody as Record<string, unknown>
+      expect(body).not.toHaveProperty("model")
+    })
+
+    it("uses per-call agent override over defaultAgent in POST body", async () => {
+      let capturedBody: unknown = null
+      mockFetch(async (input, init) => {
+        const method = init?.method ?? "GET"
+        if (method === "POST") {
+          capturedBody = JSON.parse(init!.body as string)
+          return new Response(JSON.stringify({ id: "ses-z" }), { status: 200 })
+        }
+        return new Response(JSON.stringify([]), { status: 200 })
+      })
+
+      sm = createSessionManager({
+        serverUrl: SERVER_URL,
+        db,
+        defaultAgent: "build",
+        defaultModel: "opencode/minimax-m3-free",
+      })
+      await sm.getOrCreate("chat-override", "code")
+
+      expect(capturedBody).toEqual({
+        title: "Feishu chat chat-override",
+        agent: "code",
+        model: { providerID: "opencode", id: "minimax-m3-free" },
+      })
+    })
+  })
+
   describe("cleanup", () => {
     it("does not break with is_bound column", () => {
       sm = createSessionManager({ serverUrl: SERVER_URL, db, defaultAgent: DEFAULT_AGENT })
@@ -324,7 +423,6 @@ describe("session-manager", () => {
       expect(result).toBe(tuiSessionId)
       expect(sm.getSession("chat-valid-discover")!.is_bound).toBe(1)
     })
-  })
 
     it("accepts discovered session when server returns 500 (conservative — not 404)", async () => {
       const tuiSessionId = "ses-500-tui"
@@ -354,6 +452,7 @@ describe("session-manager", () => {
       expect(result).toBe(tuiSessionId)
       expect(sm.getSession("chat-500-discover")!.is_bound).toBe(1)
     })
+  })
 
   describe("validateAndCleanupStale", () => {
     it("removes mappings whose sessions return 404", async () => {

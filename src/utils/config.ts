@@ -37,9 +37,27 @@ const HeartbeatConfigSchema = z.object({
   statusChatId: z.string().optional(),
 })
 
+/**
+ * Parse a model spec of the form `"<providerID>/<id>"` into the
+ * `{ providerID, id }` shape the opencode server expects in POST /session.
+ *
+ * Examples:
+ *   "opencode/minimax-m3-free" → { providerID: "opencode", id: "minimax-m3-free" }
+ *   "anthropic/claude-sonnet-4-5" → { providerID: "anthropic", id: "claude-sonnet-4-5" }
+ */
+export function parseModelSpec(spec: string): { providerID: string; id: string } | null {
+  const slash = spec.indexOf("/")
+  if (slash <= 0 || slash === spec.length - 1) return null
+  return { providerID: spec.slice(0, slash), id: spec.slice(slash + 1) }
+}
+
 const AppConfigSchema = z.object({
   feishu: FeishuConfigSchema,
   defaultAgent: z.string().default("build"),
+  // opencode model spec as "providerID/id". When set, newly created
+  // sessions are pinned to this model. Falls back to opencode's own
+  // default for the agent when unset/empty.
+  defaultModel: z.string().default("opencode/minimax-m3-free"),
   dataDir: z.string().default("./data"),
   progress: ProgressConfigSchema.optional(),
   cron: CronConfigSchema.optional(),
@@ -94,7 +112,8 @@ export async function loadConfig(configPath?: string): Promise<AppConfig> {
         webhookPort: Number(process.env["OPENCODE_FEISHU_PORT"] ?? "3000"),
         encryptKey: process.env["FEISHU_ENCRYPT_KEY"],
       },
-      defaultAgent: "build",
+      defaultAgent: process.env["OPENCODE_DEFAULT_AGENT"] ?? "build",
+      defaultModel: process.env["OPENCODE_DEFAULT_MODEL"] ?? "opencode/minimax-m3-free",
       dataDir: "./data",
     })
   }

@@ -8,7 +8,7 @@
         "@larksuiteoapi/node-sdk": "^1.59.0",
         "@opencode-ai/sdk": "^1.1.19",
         "express": "^4.21.0",
-        "zod": "^3.24.0",
+        "zod": "3.24.1",
       },
       "devDependencies": {
         "@types/bun": "^1.3.9",
@@ -414,7 +414,7 @@
 
     "ws": ["ws@8.19.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg=="],
 
-    "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
+    "zod": ["zod@3.24.1", "", {}, "sha512-muH7gBL9sI1nciMZV67X5fTKKBLtwpZ5VBp1vsOQzj1MhrBZ4wlVCm3gedKZWLp0Oyel8sIGfeiz54Su+OVT+A=="],
 
     "@types/serve-static/@types/send": ["@types/send@0.17.6", "", { "dependencies": { "@types/mime": "^1", "@types/node": "*" } }, "sha512-Uqt8rPBE8SY0RK8JB1EzVOIZ32uqy8HwdxCnoCOsYrvnswqmFZ/k+9Ikidlk/ImhsdvBsloHbAlewb2IEBV/Og=="],
 

@@ -135,7 +135,7 @@ describe("StreamingCardSession", () => {
 
       expect(cardkitClient.closeStreaming).toHaveBeenCalledWith(
         "card_123",
-        "✅ 2 tool(s) used",
+        "✅ 2 tool(s)",
         expect.any(Number),
       )
     })
@@ -201,7 +201,7 @@ describe("StreamingCardSession", () => {
       await session.setToolStatus("read_file", "running")
 
       const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
-      expect(lastCall[2]).toContain("🔄 read_file")
+      expect(lastCall[2]).toContain("🔄 **read_file**")
     })
 
     it("updates existing tool status", async () => {
@@ -212,8 +212,8 @@ describe("StreamingCardSession", () => {
       await session.setToolStatus("read_file", "completed")
 
       const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
-      expect(lastCall[2]).toContain("✅ read_file")
-      expect(lastCall[2]).not.toContain("🔄 read_file")
+      expect(lastCall[2]).toContain("✅ **read_file**")
+      expect(lastCall[2]).not.toContain("🔄 **read_file**")
     })
 
     it("displays title with tool status when title provided", async () => {
@@ -223,7 +223,7 @@ describe("StreamingCardSession", () => {
       await session.setToolStatus("read_file", "completed", "Read src/index.ts")
 
       const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
-      expect(lastCall[2]).toContain("✅ read_file · Read src/index.ts")
+      expect(lastCall[2]).toContain("✅ **read_file** · Read src/index.ts")
     })
 
     it("updates title retroactively on state transition", async () => {
@@ -234,8 +234,8 @@ describe("StreamingCardSession", () => {
       await session.setToolStatus("bash", "completed", "Run tests")
 
       const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
-      expect(lastCall[2]).toContain("✅ bash · Run tests")
-      expect(lastCall[2]).not.toContain("🔄 bash")
+      expect(lastCall[2]).toContain("✅ **bash** · Run tests")
+      expect(lastCall[2]).not.toContain("🔄 **bash**")
     })
 
     it("no title separator when title is undefined", async () => {
@@ -245,7 +245,7 @@ describe("StreamingCardSession", () => {
       await session.setToolStatus("bash", "running")
 
       const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
-      expect(lastCall[2]).toContain("🔄 bash")
+      expect(lastCall[2]).toContain("🔄 **bash**")
       expect(lastCall[2]).not.toContain("· ")
     })
   })
@@ -264,7 +264,7 @@ describe("StreamingCardSession", () => {
   })
 
   describe("tool-only card content", () => {
-    it("card content contains only tool statuses", async () => {
+    it("card content contains tool statuses", async () => {
       const { session, cardkitClient } = createStartedSession()
       await session.start()
 
@@ -274,20 +274,134 @@ describe("StreamingCardSession", () => {
 
       const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
       const content = lastCall[2] as string
-      expect(content).toContain("✅ read_file · Read config")
-      expect(content).toContain("✅ bash · Run tests")
-      // Content should be ONLY tool status lines (starts with separator)
-      expect(content).toMatch(/^\n\n---\n/)
+      expect(content).toContain("✅ **read_file** · Read config")
+      expect(content).toContain("✅ **bash** · Run tests")
+      // Content should include the tool separator
+      expect(content).toMatch(/\n\n---\n/)
     })
 
-    it("card content is tool-only (no free-form text)", async () => {
+    it("tool status alone is rendered", async () => {
       const { session, cardkitClient } = createStartedSession()
       await session.start()
 
-      // Add a tool status — content should be tool status only
       await session.setToolStatus("bash", "running")
       const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
-      expect(lastCall[2]).toContain("🔄 bash")
+      expect(lastCall[2]).toContain("🔄 **bash**")
+    })
+  })
+
+  describe("appendText / appendReasoning", () => {
+    it("renders assistant text streamed via appendText", async () => {
+      const { session, cardkitClient } = createStartedSession()
+      await session.start()
+
+      await session.appendText("Hello ")
+      await session.appendText("world")
+
+      const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
+      const content = lastCall[2] as string
+      expect(content).toContain("💬 **回答**")
+      expect(content).toContain("Hello world")
+    })
+
+    it("renders reasoning streamed via appendReasoning", async () => {
+      const { session, cardkitClient } = createStartedSession()
+      await session.start()
+
+      await session.appendReasoning("thinking step 1")
+      await session.appendReasoning(" → step 2")
+
+      const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
+      const content = lastCall[2] as string
+      expect(content).toContain("🧠 **思考过程**")
+      expect(content).toContain("thinking step 1 → step 2")
+    })
+
+    it("renders text + reasoning + tools together", async () => {
+      const { session, cardkitClient } = createStartedSession()
+      await session.start()
+
+      await session.appendReasoning("looking up file")
+      await session.setToolStatus("read_file", "completed", "Read README")
+      await session.appendText("Here is the answer")
+
+      const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
+      const content = lastCall[2] as string
+      expect(content).toContain("🧠 **思考过程**")
+      expect(content).toContain("looking up file")
+      expect(content).toContain("💬 **回答**")
+      expect(content).toContain("Here is the answer")
+      expect(content).toContain("✅ **read_file** · Read README")
+    })
+
+    it("no-op when card is not started", async () => {
+      const { session, cardkitClient } = createStartedSession()
+      // No start() — should not throw and not call updateElement
+      await expect(session.appendText("hello")).resolves.toBeUndefined()
+      await expect(session.appendReasoning("thinking")).resolves.toBeUndefined()
+      await expect(session.setToolStatus("bash", "running")).resolves.toBeUndefined()
+      expect(cardkitClient.updateElement).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("setToolInput / setToolOutput / setToolError", () => {
+    it("renders tool input under the tool entry", async () => {
+      const { session, cardkitClient } = createStartedSession()
+      await session.start()
+
+      await session.setToolStatus("bash", "running")
+      await session.setToolInput("bash", { command: "ls -la" })
+
+      const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
+      const content = lastCall[2] as string
+      expect(content).toContain("🔄 **bash**")
+      expect(content).toContain("› input:")
+      expect(content).toContain("ls -la")
+    })
+
+    it("renders tool output as a code block", async () => {
+      const { session, cardkitClient } = createStartedSession()
+      await session.start()
+
+      await session.setToolStatus("bash", "completed", "Run ls")
+      await session.setToolOutput("bash", "file1\nfile2\nfile3")
+
+      const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
+      const content = lastCall[2] as string
+      expect(content).toContain("› output:")
+      expect(content).toContain("file1")
+      expect(content).toContain("file2")
+      expect(content).toContain("file3")
+    })
+
+    it("appends incremental output instead of overwriting", async () => {
+      const { session, cardkitClient } = createStartedSession()
+      await session.start()
+
+      await session.setToolStatus("bash", "running")
+      await session.appendToolOutput("bash", "chunk1\n")
+      await session.appendToolOutput("bash", "chunk2\n")
+      await session.appendToolOutput("bash", "chunk3\n")
+
+      const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
+      const content = lastCall[2] as string
+      expect(content).toContain("chunk1")
+      expect(content).toContain("chunk2")
+      expect(content).toContain("chunk3")
+    })
+
+    it("renders tool error with ❌ state", async () => {
+      const { session, cardkitClient } = createStartedSession()
+      await session.start()
+
+      await session.setToolStatus("bash", "running")
+      await session.setToolError("bash", "permission denied")
+
+      const lastCall = cardkitClient.updateElement.mock.calls.at(-1)!
+      const content = lastCall[2] as string
+      expect(content).toContain("❌ **bash**")
+      expect(content).toContain("› error:")
+      expect(content).toContain("permission denied")
     })
   })
 })
