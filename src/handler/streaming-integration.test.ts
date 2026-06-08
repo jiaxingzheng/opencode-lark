@@ -249,11 +249,15 @@ describe("createStreamingBridge", () => {
 
     await handlePromise
 
-    // Tool progress sent as text message
+    // Tool progress sent as text message (skip thinking message)
     const toolCall = mockFeishu.sendMessage.mock.calls.find(
-      (call: unknown[]) =>
-        call[0] === "chat-1" &&
-        (call[1] as any)?.msg_type === "text",
+      (call: unknown[]) => {
+        if (call[0] !== "chat-1" || (call[1] as any)?.msg_type !== "text") return false
+        const content = typeof (call[1] as any)?.content === "string"
+          ? JSON.parse((call[1] as any).content)
+          : (call[1] as any)?.content
+        return content?.text?.includes("List files")
+      },
     )
     expect(toolCall).toBeDefined()
     const arg = toolCall![1] as any
@@ -316,11 +320,15 @@ describe("createStreamingBridge", () => {
 
     await handlePromise
 
-    // Only one text message for "bash"
+    // Only one tool progress text message (thinking message is separate)
     const textCalls = mockFeishu.sendMessage.mock.calls.filter(
-      (call: unknown[]) =>
-        call[0] === "chat-1" &&
-        (call[1] as any)?.msg_type === "text",
+      (call: unknown[]) => {
+        if (call[0] !== "chat-1" || (call[1] as any)?.msg_type !== "text") return false
+        const content = typeof (call[1] as any)?.content === "string"
+          ? JSON.parse((call[1] as any).content)
+          : (call[1] as any)?.content
+        return content?.text?.includes("Run tests")
+      },
     )
     expect(textCalls).toHaveLength(1)
   })

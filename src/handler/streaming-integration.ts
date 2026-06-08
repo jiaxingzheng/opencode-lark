@@ -118,6 +118,7 @@ export function createStreamingBridge(
       let settled = false
       let syncResponseBody = ""
       const reportedTools = new Set<string>()
+      let thinkingMsgId: string | null = null
       let completeResolve: (() => void) | null = null
       const completePromise = new Promise<void>((resolve) => {
         completeResolve = resolve
@@ -131,6 +132,19 @@ export function createStreamingBridge(
           await feishuClient.deleteReaction(messageId, reactionId)
         } catch (err) {
           logger.warn(`deleteReaction failed: ${err}`)
+        }
+      }
+
+      const sendThinkingMessage = async (): Promise<void> => {
+        if (thinkingMsgId) return
+        try {
+          const result = await feishuClient.sendMessage(chatId, {
+            msg_type: "text",
+            content: JSON.stringify({ text: "🤔 思考中..." }),
+          })
+          thinkingMsgId = (result as any)?.data?.message_id ?? null
+        } catch (err) {
+          logger.warn(`sendThinkingMessage failed: ${err}`)
         }
       }
 
@@ -182,7 +196,10 @@ export function createStreamingBridge(
         if (!action) return
         if (action.sessionId !== sessionId) return
 
-        gotFirstEvent = true
+        if (!gotFirstEvent) {
+          gotFirstEvent = true
+          sendThinkingMessage().catch((err) => logger.warn(`sendThinkingMessage failed: ${err}`))
+        }
 
         switch (action.type) {
           case "TextDelta": {
