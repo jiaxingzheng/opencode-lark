@@ -186,7 +186,6 @@ async function main(): Promise<void> {
   })
 
   const streamingBridge = createStreamingBridge({
-    cardkitClient,
     feishuClient,
     subAgentTracker,
     logger,

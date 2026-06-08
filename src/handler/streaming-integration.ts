@@ -1,5 +1,4 @@
 
-import type { CardKitClient } from "../feishu/cardkit-client.js"
 import type { FeishuApiClient } from "../feishu/api-client.js"
 import type { SubAgentTracker } from "../streaming/subagent-tracker.js"
 import type { Logger } from "../utils/logger.js"
@@ -7,11 +6,6 @@ import type { EventProcessor } from "../streaming/event-processor.js"
 import type { QuestionAsked, PermissionRequested } from "../streaming/event-processor.js"
 import type { EventListenerMap } from "../utils/event-listeners.js"
 import { addListener, removeListener } from "../utils/event-listeners.js"
-import {
-  AnswerCardSession,
-  ReasoningCardSession,
-  ToolsCardSession,
-} from "../streaming/streaming-card.js"
 import type { OutboundMediaHandler } from "./outbound-media.js"
 import type { ExpiringSet } from "../utils/expiring-set.js"
 import type { InteractiveCardRegistry } from "../feishu/interactive-card-registry.js"
@@ -23,7 +17,6 @@ import {
 // ── Types ──
 
 export interface StreamingBridgeDeps {
-  cardkitClient: CardKitClient
   feishuClient: FeishuApiClient
   subAgentTracker: SubAgentTracker
   logger: Logger
@@ -47,15 +40,39 @@ export interface StreamingBridge {
 
 // ── Constants ──
 
+const FIRST_EVENT_TIMEOUT_MS = 90 * 1_000
 
-const FIRST_EVENT_TIMEOUT_MS = 90 * 1_000 // 90 seconds — if no SSE event arrives this fast the upstream model is hung
+// ── Tool emoji mapping ──
+
+const TOOL_EMOJI: Record<string, string> = {
+  read_file: "📖",
+  write_file: "✏️",
+  edit_file: "✏️",
+  list_files: "📂",
+  search: "🔍",
+  grep: "🔍",
+  glob: "🔍",
+  bash: "💻",
+  execute: "💻",
+  question: "❓",
+  permission: "🔐",
+  browser: "🌐",
+  web_fetch: "🌐",
+  web_search: "🔎",
+  image: "🖼️",
+  todo: "📝",
+}
+
+function getToolEmoji(toolName: string): string {
+  return TOOL_EMOJI[toolName] ?? "🔧"
+}
 
 // ── Factory ──
 
 export function createStreamingBridge(
   deps: StreamingBridgeDeps,
 ): StreamingBridge {
-  const { cardkitClient, feishuClient, subAgentTracker, logger, seenInteractiveIds } = deps
+  const { feishuClient, logger, seenInteractiveIds } = deps
 
   return {
     async handleMessage(
@@ -68,124 +85,147 @@ export function createStreamingBridge(
       messageId: string,
       reactionId: string | null,
     ): Promise<void> {
-      // Three independent cards, each lazy-started on its first event.
-      const answerCard = new AnswerCardSession({ cardkitClient, feishuClient, chatId, logger })
-      const reasoningCard = new ReasoningCardSession({ cardkitClient, feishuClient, chatId, logger })
-      const toolsCard = new ToolsCardSession({ cardkitClient, feishuClient, chatId, logger })
+      // ── State ──
+      let textBuffer = ""
+      let gotFirstEvent = false
+      let settled = false
+      let syncResponseBody = ""
+      const reportedTools = new Set<string>()
+      let completeResolve: (() => void) | null = null
+      const completePromise = new Promise<void>((resolve) => {
+        completeResolve = resolve
+      })
 
-      const started: string[] = [] // for logging on SessionIdle
+      // ── Helpers ──
 
-      return new Promise<void>((resolve, reject) => {
-        let textBuffer = ""
-        let gotFirstEvent = false
-        let settled = false
-        let syncResponseBody = ""
-        const sendFinalResponse = async (text: string): Promise<void> => {
-          const card = buildFinalResponseCard(text)
-          await feishuClient.replyMessage(messageId, {
-            msg_type: "interactive",
-            content: JSON.stringify(card),
-          })
-          if (reactionId) {
-            try {
-              await feishuClient.deleteReaction(messageId, reactionId)
-            } catch (err) {
-              logger.warn(`deleteReaction failed: ${err}`)
-            }
-          }
+      const removeReaction = async (): Promise<void> => {
+        if (!reactionId) return
+        try {
+          await feishuClient.deleteReaction(messageId, reactionId)
+        } catch (err) {
+          logger.warn(`deleteReaction failed: ${err}`)
         }
+      }
 
-        // Named listener reference — stored for removeListener calls
-        const myListener = (rawEvent: unknown): void => {
-          const action = eventProcessor.processEvent(rawEvent)
-          if (!action) return
-          if (action.sessionId !== sessionId) return
+      const sendFinalResponse = async (text: string): Promise<void> => {
+        const card = buildFinalResponseCard(text)
+        await feishuClient.replyMessage(messageId, {
+          msg_type: "interactive",
+          content: JSON.stringify(card),
+        })
+        await removeReaction()
+      }
 
-          gotFirstEvent = true
+      const sendToolProgress = async (
+        toolName: string,
+        state: string,
+        title?: string,
+      ): Promise<void> => {
+        // Only send first notification per tool (skip repeated "running" events)
+        if (reportedTools.has(toolName)) return
+        reportedTools.add(toolName)
 
-          switch (action.type) {
-            case "TextDelta": {
-              textBuffer += action.text
-              if (textBuffer.length > 102_400) {
-                textBuffer = textBuffer.slice(0, 102_400) + "\n\n…(内容过长，已截断)"
-              }
-              if (!started.includes("answer")) started.push("answer")
-              answerCard.appendText(action.text).catch((err) => {
-                logger.warn(`appendText failed: ${err}`)
+        const emoji = getToolEmoji(toolName)
+        const label = title ? `${toolName} · ${title}` : toolName
+        const prefix =
+          state === "completed"
+            ? `${emoji} ✅`
+            : state === "error"
+              ? `${emoji} ❌`
+              : emoji
+        const msg = `${prefix} ${label}`
+
+        try {
+          await feishuClient.sendMessage(chatId, {
+            msg_type: "text",
+            content: JSON.stringify({ text: msg }),
+          })
+        } catch (err) {
+          logger.warn(`sendToolProgress failed: ${err}`)
+        }
+      }
+
+      // ── Event listener ──
+
+      const myListener = (rawEvent: unknown): void => {
+        const action = eventProcessor.processEvent(rawEvent)
+        if (!action) return
+        if (action.sessionId !== sessionId) return
+
+        gotFirstEvent = true
+
+        switch (action.type) {
+          case "TextDelta": {
+            textBuffer += action.text
+            if (textBuffer.length > 102_400) {
+              textBuffer = textBuffer.slice(0, 102_400) + "\n\n…(内容过长，已截断)"
+            }
+            break
+          }
+
+          case "ReasoningDelta": {
+            // Intentionally ignored — hermes-style: no thinking display
+            break
+          }
+
+          case "ToolStateChange": {
+            sendToolProgress(
+              action.toolName,
+              action.state as string,
+              action.title,
+            ).catch((err) => logger.warn(`sendToolProgress failed: ${err}`))
+            break
+          }
+
+          case "SubtaskDiscovered": {
+            deps.subAgentTracker
+              .onSubtaskDiscovered(action)
+              .then((tracked) => {
+                const childSessionId = tracked.childSessionId ?? action.sessionId
+                const cardData = buildSubAgentNotificationCard(
+                  action.description,
+                  action.agent ?? "sub-agent",
+                  childSessionId,
+                )
+                return feishuClient.sendMessage(chatId, {
+                  msg_type: "interactive",
+                  content: JSON.stringify(cardData),
+                })
               })
-              break
-            }
-
-            case "ReasoningDelta": {
-              if (!started.includes("reasoning")) started.push("reasoning")
-              reasoningCard.appendReasoning(action.text).catch((err) => {
-                logger.warn(`appendReasoning failed: ${err}`)
+              .catch((err) => {
+                logger.warn(`SubtaskDiscovered handling failed: ${err}`)
               })
+            break
+          }
+
+          case "QuestionAsked": {
+            const cardKey = interactiveCardKey("question", action.requestId)
+            if (seenInteractiveIds.has(cardKey)) break
+            if (
+              deps.interactiveCardRegistry &&
+              !deps.interactiveCardRegistry.beginDispatch(
+                "question",
+                action.requestId,
+              )
+            ) {
               break
             }
-
-            case "ToolStateChange": {
-              if (!started.includes("tools")) started.push("tools")
-              toolsCard.setToolStatus(
-                action.toolName,
-                action.state as "running" | "completed" | "error",
-                action.title,
-              ).catch((err) => logger.warn(`setToolStatus failed: ${err}`))
-              if (action.input !== undefined) {
-                toolsCard.setToolInput(action.toolName, action.input).catch((err) => {
-                  logger.warn(`setToolInput failed: ${err}`)
-                })
-              }
-              if (typeof action.output === "string") {
-                toolsCard.setToolOutput(action.toolName, action.output).catch((err) => {
-                  logger.warn(`setToolOutput failed: ${err}`)
-                })
-              }
-              if (typeof action.error === "string") {
-                toolsCard.setToolError(action.toolName, action.error).catch((err) => {
-                  logger.warn(`setToolError failed: ${err}`)
-                })
-              }
-              break
-            }
-
-            case "SubtaskDiscovered": {
-              subAgentTracker
-                .onSubtaskDiscovered(action)
-                .then((tracked) => {
-                  const childSessionId = tracked.childSessionId ?? action.sessionId
-                  // Build and send a separate card for this sub-agent
-                  const cardData = buildSubAgentNotificationCard(
-                    action.description,
-                    action.agent ?? "sub-agent",
-                    childSessionId,
-                  )
-                  return feishuClient.sendMessage(chatId, {
-                    msg_type: "interactive",
-                    content: JSON.stringify(cardData),
-                  })
-                })
-                .catch((err) => {
-                  logger.warn(`SubtaskDiscovered handling failed: ${err}`)
-                })
-              break
-            }
-
-            case "QuestionAsked": {
-              const cardKey = interactiveCardKey("question", action.requestId)
-              if (seenInteractiveIds.has(cardKey)) break
-              if (deps.interactiveCardRegistry && !deps.interactiveCardRegistry.beginDispatch("question", action.requestId)) {
-                break
-              }
-              logger.info(`Question event received in bridge for session ${sessionId}, requestId=${action.requestId}`)
-              const questionCard = buildQuestionCard(action)
-              feishuClient.sendMessage(chatId, {
+            logger.info(
+              `Question event received in bridge for session ${sessionId}, requestId=${action.requestId}`,
+            )
+            const questionCard = buildQuestionCard(action)
+            feishuClient
+              .sendMessage(chatId, {
                 msg_type: "interactive",
                 content: JSON.stringify(questionCard),
-              }).then((response) => {
-                const messageId = extractFeishuMessageId(response)
-                if (!messageId) {
-                  deps.interactiveCardRegistry?.failDispatch("question", action.requestId)
+              })
+              .then((response) => {
+                const mid = extractFeishuMessageId(response)
+                if (!mid) {
+                  deps.interactiveCardRegistry?.failDispatch(
+                    "question",
+                    action.requestId,
+                  )
                   return
                 }
                 seenInteractiveIds.add(cardKey)
@@ -193,30 +233,47 @@ export function createStreamingBridge(
                   requestId: action.requestId,
                   kind: "question",
                   chatId,
-                  messageId,
+                  messageId: mid,
                 })
-              }).catch((err) => {
-                deps.interactiveCardRegistry?.failDispatch("question", action.requestId)
+              })
+              .catch((err) => {
+                deps.interactiveCardRegistry?.failDispatch(
+                  "question",
+                  action.requestId,
+                )
                 logger.warn(`Question card send failed: ${err}`)
               })
+            break
+          }
+
+          case "PermissionRequested": {
+            const cardKey = interactiveCardKey("permission", action.requestId)
+            if (seenInteractiveIds.has(cardKey)) break
+            if (
+              deps.interactiveCardRegistry &&
+              !deps.interactiveCardRegistry.beginDispatch(
+                "permission",
+                action.requestId,
+              )
+            ) {
               break
             }
-
-            case "PermissionRequested": {
-              const cardKey = interactiveCardKey("permission", action.requestId)
-              if (seenInteractiveIds.has(cardKey)) break
-              if (deps.interactiveCardRegistry && !deps.interactiveCardRegistry.beginDispatch("permission", action.requestId)) {
-                break
-              }
-              logger.info(`Permission event received in bridge for session ${sessionId}, requestId=${action.requestId}`)
-              const permissionCard = buildPermissionCard(action)
-              feishuClient.sendMessage(chatId, {
+            logger.info(
+              `Permission event received in bridge for session ${sessionId}, requestId=${action.requestId}`,
+            )
+            const permissionCard = buildPermissionCard(action)
+            feishuClient
+              .sendMessage(chatId, {
                 msg_type: "interactive",
                 content: JSON.stringify(permissionCard),
-              }).then((response) => {
-                const messageId = extractFeishuMessageId(response)
-                if (!messageId) {
-                  deps.interactiveCardRegistry?.failDispatch("permission", action.requestId)
+              })
+              .then((response) => {
+                const mid = extractFeishuMessageId(response)
+                if (!mid) {
+                  deps.interactiveCardRegistry?.failDispatch(
+                    "permission",
+                    action.requestId,
+                  )
                   return
                 }
                 seenInteractiveIds.add(cardKey)
@@ -224,125 +281,110 @@ export function createStreamingBridge(
                   requestId: action.requestId,
                   kind: "permission",
                   chatId,
-                  messageId,
+                  messageId: mid,
                 })
-              }).catch((err) => {
-                deps.interactiveCardRegistry?.failDispatch("permission", action.requestId)
+              })
+              .catch((err) => {
+                deps.interactiveCardRegistry?.failDispatch(
+                  "permission",
+                  action.requestId,
+                )
                 logger.warn(`Permission card send failed: ${err}`)
               })
-              break
-            }
-
-            case "SessionIdle": {
-              if (settled) return
-              settled = true
-              clearTimeout(firstEventTimer)
-              removeListener(eventListeners, sessionId, myListener)
-              const responseText = textBuffer.trim() || "（无回复）"
-              logger.info(
-                `Closing ${started.length} card(s) for session ${sessionId}: ${started.join(", ") || "(none)"}`,
-              )
-              void (async () => {
-                const results = await Promise.allSettled([
-                  answerCard.close(),
-                  reasoningCard.close(),
-                  toolsCard.close(),
-                ])
-                for (const r of results) {
-                  if (r.status === "rejected") {
-                    logger.warn(`card.close() failed: ${r.reason}`)
-                  }
-                }
-                try {
-                  await sendFinalResponse(responseText)
-                } catch (err) {
-                  logger.warn(`sendFinalResponse failed: ${err}`)
-                }
-                if (deps.outboundMedia) {
-                  try {
-                    await deps.outboundMedia.sendDetectedFiles(chatId, responseText)
-                  } catch (err) {
-                    logger.warn(`outboundMedia.sendDetectedFiles failed: ${err}`)
-                  }
-                }
-                onComplete(responseText)
-                resolve()
-              })()
-              break
-            }
-
-            default:
-              break
+            break
           }
-        }
 
-        const firstEventTimer = setTimeout(() => {
-          if (gotFirstEvent || settled) return
-          settled = true
-          removeListener(eventListeners, sessionId, myListener)
-          logger.warn(
-            `No SSE events received within ${FIRST_EVENT_TIMEOUT_MS}ms for ${sessionId}, falling back to sync response`,
-          )
-          const fallbackText = parseSyncResponse(syncResponseBody, logger)
-          void (async () => {
-            try {
-              await answerCard.setFinalText(fallbackText)
-            } catch (err) {
-              logger.warn(`setFinalText in timeout fallback failed: ${err}`)
-            }
-            const results = await Promise.allSettled([
-              answerCard.close(),
-              reasoningCard.close(),
-              toolsCard.close(),
-            ])
-            for (const r of results) {
-              if (r.status === "rejected") {
-                logger.warn(`card.close() in timeout fallback failed: ${r.reason}`)
-              }
-            }
-            try {
-              await sendFinalResponse(fallbackText)
-            } catch (err) {
-              logger.warn(`sendFinalResponse in timeout fallback failed: ${err}`)
-            }
-            if (deps.outboundMedia) {
-              try {
-                await deps.outboundMedia.sendDetectedFiles(chatId, fallbackText)
-              } catch (mediaErr) {
-                logger.warn(`outboundMedia.sendDetectedFiles in timeout fallback failed: ${mediaErr}`)
-              }
-            }
-            onComplete(fallbackText)
-            resolve()
-          })()
-        }, FIRST_EVENT_TIMEOUT_MS)
-
-        // Register event listener BEFORE the POST to avoid race condition
-        addListener(eventListeners, sessionId, myListener)
-
-
-        sendMessage()
-          .then((responseBody) => {
-            syncResponseBody = responseBody
-            logger.info(
-              `POST completed for session ${sessionId} (${responseBody.length} bytes)`,
-            )
-          })
-          .catch(async (err) => {
+          case "SessionIdle": {
             if (settled) return
-            // If SSE events have been flowing, the POST timeout is expected
-            // (e.g. agent blocked on question/permission). Keep the listener alive.
-            if (gotFirstEvent) {
-              logger.info(`POST timed out for session ${sessionId} but SSE events are flowing — keeping listener active`)
-              return
-            }
             settled = true
             clearTimeout(firstEventTimer)
             removeListener(eventListeners, sessionId, myListener)
-            await Promise.allSettled([answerCard.close(), reasoningCard.close(), toolsCard.close()])
-            reject(err)
-          })
-      })
+
+            const responseText = textBuffer.trim() || "（无回复）"
+            logger.info(
+              `Session ${sessionId} idle — sending final response (${responseText.length} chars)`,
+            )
+
+            void (async () => {
+              try {
+                await sendFinalResponse(responseText)
+              } catch (err) {
+                logger.warn(`sendFinalResponse failed: ${err}`)
+              }
+              if (deps.outboundMedia) {
+                try {
+                  await deps.outboundMedia.sendDetectedFiles(chatId, responseText)
+                } catch (err) {
+                  logger.warn(`outboundMedia.sendDetectedFiles failed: ${err}`)
+                }
+              }
+              onComplete(responseText)
+              completeResolve?.()
+            })()
+            break
+          }
+
+          default:
+            break
+        }
+      }
+
+      // ── Timeout: no SSE events within FIRST_EVENT_TIMEOUT_MS ──
+
+      const firstEventTimer = setTimeout(() => {
+        if (gotFirstEvent || settled) return
+        settled = true
+        removeListener(eventListeners, sessionId, myListener)
+        logger.warn(
+          `No SSE events received within ${FIRST_EVENT_TIMEOUT_MS}ms for ${sessionId}, falling back to sync response`,
+        )
+        const fallbackText = parseSyncResponse(syncResponseBody, logger)
+        void (async () => {
+          try {
+            await sendFinalResponse(fallbackText)
+          } catch (err) {
+            logger.warn(`sendFinalResponse in timeout fallback failed: ${err}`)
+          }
+          if (deps.outboundMedia) {
+            try {
+              await deps.outboundMedia.sendDetectedFiles(chatId, fallbackText)
+            } catch (mediaErr) {
+              logger.warn(
+                `outboundMedia.sendDetectedFiles in timeout fallback failed: ${mediaErr}`,
+              )
+            }
+          }
+          onComplete(fallbackText)
+          completeResolve?.()
+        })()
+      }, FIRST_EVENT_TIMEOUT_MS)
+
+      // ── Register listener BEFORE POST to avoid race ──
+
+      addListener(eventListeners, sessionId, myListener)
+
+      sendMessage()
+        .then((responseBody) => {
+          syncResponseBody = responseBody
+          logger.info(
+            `POST completed for session ${sessionId} (${responseBody.length} bytes)`,
+          )
+        })
+        .catch((err) => {
+          if (settled) return
+          if (gotFirstEvent) {
+            logger.info(
+              `POST timed out for session ${sessionId} but SSE events are flowing — keeping listener active`,
+            )
+            return
+          }
+          settled = true
+          clearTimeout(firstEventTimer)
+          removeListener(eventListeners, sessionId, myListener)
+          logger.warn(`sendMessage failed for ${sessionId}: ${err}`)
+        })
+
+      await completePromise
     },
   }
 }
@@ -416,7 +458,6 @@ export function buildQuestionCard(
 ): Record<string, unknown> {
   const elements: Record<string, unknown>[] = []
 
-  // Render each question (support multi-question requests)
   for (let qi = 0; qi < action.questions.length; qi++) {
     const question = action.questions[qi]!
     if (qi > 0) {
@@ -459,7 +500,10 @@ export function buildPermissionCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: "plain_text", content: `🔐 Permission: ${action.permissionType}` },
+      title: {
+        tag: "plain_text",
+        content: `🔐 Permission: ${action.permissionType}`,
+      },
       template: "yellow",
     },
     elements: [
@@ -474,19 +518,31 @@ export function buildPermissionCard(
             tag: "button",
             text: { tag: "plain_text", content: "✅ Allow Once" },
             type: "primary",
-            value: { action: "permission_reply", requestId: action.requestId, reply: "once" },
+            value: {
+              action: "permission_reply",
+              requestId: action.requestId,
+              reply: "once",
+            },
           },
           {
             tag: "button",
             text: { tag: "plain_text", content: "✅ Always Allow" },
             type: "default",
-            value: { action: "permission_reply", requestId: action.requestId, reply: "always" },
+            value: {
+              action: "permission_reply",
+              requestId: action.requestId,
+              reply: "always",
+            },
           },
           {
             tag: "button",
             text: { tag: "plain_text", content: "❌ Reject" },
             type: "danger",
-            value: { action: "permission_reply", requestId: action.requestId, reply: "reject" },
+            value: {
+              action: "permission_reply",
+              requestId: action.requestId,
+              reply: "reject",
+            },
           },
         ],
       },
