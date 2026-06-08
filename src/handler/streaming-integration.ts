@@ -143,6 +143,7 @@ export function createStreamingBridge(
             content: JSON.stringify({ text: "🤔 思考中..." }),
           })
           thinkingMsgId = (result as any)?.data?.message_id ?? null
+          logger.info(`Thinking message sent: ${thinkingMsgId}`)
         } catch (err) {
           logger.warn(`sendThinkingMessage failed: ${err}`)
         }
@@ -184,6 +185,7 @@ export function createStreamingBridge(
             msg_type: "text",
             content: JSON.stringify({ text: msg }),
           })
+          logger.info(`Tool progress sent: ${msg}`)
         } catch (err) {
           logger.warn(`sendToolProgress failed: ${err}`)
         }
