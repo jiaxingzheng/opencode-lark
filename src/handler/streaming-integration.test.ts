@@ -258,7 +258,6 @@ describe("createStreamingBridge", () => {
     expect(toolCall).toBeDefined()
     const arg = toolCall![1] as any
     const content = typeof arg.content === "string" ? JSON.parse(arg.content) : arg.content
-    expect(content.text).toContain("bash")
     expect(content.text).toContain("List files")
   })
 

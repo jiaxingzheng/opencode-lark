@@ -67,6 +67,33 @@ function getToolEmoji(toolName: string): string {
   return TOOL_EMOJI[toolName] ?? "🔧"
 }
 
+function extractToolPreview(toolName: string, input?: Record<string, unknown>): string | undefined {
+  if (!input) return undefined
+  switch (toolName) {
+    case "bash":
+      return typeof input.command === "string" ? input.command : undefined
+    case "file_edit":
+    case "file_write":
+      return typeof input.filePath === "string" ? input.filePath : undefined
+    case "file_read":
+      return typeof input.filePath === "string" ? input.filePath : undefined
+    case "glob":
+    case "glob_search":
+      return typeof input.pattern === "string" ? input.pattern : undefined
+    case "grep":
+    case "grep_search":
+      return typeof input.pattern === "string" ? input.pattern : undefined
+    case "web_fetch":
+      return typeof input.url === "string" ? input.url : undefined
+    case "websearch":
+      return typeof input.query === "string" ? input.query : undefined
+    default: {
+      const values = Object.values(input).filter((v) => typeof v === "string") as string[]
+      return values.length > 0 ? values[0] : undefined
+    }
+  }
+}
+
 // ── Factory ──
 
 export function createStreamingBridge(
@@ -120,13 +147,11 @@ export function createStreamingBridge(
         toolName: string,
         state: string,
         title?: string,
+        input?: Record<string, unknown>,
       ): Promise<void> => {
-        // Only send first notification per tool (skip repeated "running" events)
-        if (reportedTools.has(toolName)) return
-        reportedTools.add(toolName)
-
         const emoji = getToolEmoji(toolName)
-        const label = title ? `${toolName} · ${title}` : toolName
+        const preview = extractToolPreview(toolName, input)
+        const label = preview || title || toolName
         const prefix =
           state === "completed"
             ? `${emoji} ✅`
@@ -134,6 +159,11 @@ export function createStreamingBridge(
               ? `${emoji} ❌`
               : emoji
         const msg = `${prefix} ${label}`
+
+        // Only send first notification with meaningful content (skip pending with no input)
+        if (reportedTools.has(toolName)) return
+        if (!preview && state === "pending") return
+        reportedTools.add(toolName)
 
         try {
           await feishuClient.sendMessage(chatId, {
@@ -169,10 +199,12 @@ export function createStreamingBridge(
           }
 
           case "ToolStateChange": {
+            logger.info(`ToolStateChange: ${action.toolName} state=${action.state} input=${JSON.stringify(action.input)}`)
             sendToolProgress(
               action.toolName,
               action.state as string,
               action.title,
+              action.input,
             ).catch((err) => logger.warn(`sendToolProgress failed: ${err}`))
             break
           }
